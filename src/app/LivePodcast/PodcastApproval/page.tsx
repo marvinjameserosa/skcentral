@@ -1,0 +1,255 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import { db } from "@/app/Firebase/firebase";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  doc,
+  getDoc,
+  addDoc,
+  deleteDoc,
+  updateDoc,
+  setDoc,
+} from "firebase/firestore";
+import Navbar from "../../Components/Navbar";
+
+interface Podcast {
+  id: string;
+  podcastId: string;
+  title: string;
+  speaker: string;
+  topic: string;
+  status: string;
+  date: string;
+  time: string;
+  userUID: string;
+}
+
+const PodcastApproval = () => {
+  const [podcasts, setPodcasts] = useState<Podcast[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Generate Room ID: SKCMP-XXXXX-YYYYMMDD
+  const generateRoomId = (): string => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let random = "";
+    for (let i = 0; i < 5; i++) {
+      random += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const date = new Date();
+    const dateString = `${date.getFullYear()}${String(
+      date.getMonth() + 1
+    ).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+    return `SKCMP-${random}-${dateString}`;
+  };
+
+  const fetchPendingPodcasts = async () => {
+    try {
+      const q = query(
+        collection(db, "podcastRegistration"),
+        where("status", "==", "pending")
+      );
+
+      const querySnapshot = await getDocs(q);
+      const pending: Podcast[] = [];
+
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data() as Omit<Podcast, "id">;
+        pending.push({
+          id: docSnap.id,
+          ...data,
+        });
+      });
+
+      // Optional: sort by date & time, newest first
+      pending.sort((a, b) => {
+        const aTime = new Date(`${a.date}T${a.time}`).getTime();
+        const bTime = new Date(`${b.date}T${b.time}`).getTime();
+        return bTime - aTime;
+      });
+
+      setPodcasts(pending);
+      setIsLoading(false);
+    } catch (error) {
+      console.error("Error fetching podcasts:", error);
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPendingPodcasts();
+  }, []);
+
+  const handleApprove = async (docId: string) => {
+    try {
+      const podcastRef = doc(db, "podcastRegistration", docId);
+      const podcastSnap = await getDoc(podcastRef);
+
+      if (!podcastSnap.exists()) {
+        alert("Podcast not found");
+        return;
+      }
+
+      const podcastData = podcastSnap.data();
+
+      // Generate a unique room ID for this approved podcast
+      const roomId = generateRoomId();
+
+      // Add to approved podcasts collection with room ID
+      await addDoc(collection(db, "podcasts"), {
+        ...podcastData,
+        status: "approved",
+        roomId: roomId,
+        approved: true,
+        approvedAt: new Date(),
+      });
+
+      // Create or update a room record in "rooms" collection for easier management
+      await setDoc(doc(db, "rooms", roomId), {
+        roomId: roomId,
+        podcastId: podcastData.podcastId,
+        title: podcastData.title,
+        speaker: podcastData.speaker,
+        topic: podcastData.topic,
+        hostUID: podcastData.userUID,
+        scheduledDate: podcastData.date,
+        scheduledTime: podcastData.time,
+        createdAt: new Date(),
+        status: "scheduled",
+        participants: {},
+        webrtc: {},
+      });
+
+      // Remove from pending collection
+      await deleteDoc(podcastRef);
+
+      alert(`Podcast approved successfully! Room ID: ${roomId}`);
+
+      fetchPendingPodcasts();
+    } catch (error) {
+      console.error("Error approving podcast:", error);
+      alert("Failed to approve podcast. Please try again.");
+    }
+  };
+
+  const handleReject = async (docId: string) => {
+    try {
+      await updateDoc(doc(db, "podcastRegistration", docId), {
+        status: "rejected",
+        rejectedAt: new Date(),
+      });
+      fetchPendingPodcasts();
+    } catch (error) {
+      console.error("Error rejecting podcast:", error);
+      alert("Failed to reject podcast. Please try again.");
+    }
+  };
+
+  return (
+    <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto">
+      <div className="mb-6">
+        <h1 className="text-3xl font-semibold text-gray-800">Podcast Approval</h1>
+        <p className="text-lg text-gray-600 mt-1">
+          Review and approve podcast requests from hosts.
+        </p>
+      </div>
+
+      <div className="bg-white rounded-2xl p-8 shadow border border-gray-200">
+        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">
+          Pending Podcast Requests
+        </h2>
+
+        {isLoading ? (
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+            <p className="text-gray-500">Loading pending requests...</p>
+          </div>
+        ) : podcasts.length > 0 ? (
+          <div className="space-y-4">
+            {podcasts.map((pod) => (
+              <div
+                key={pod.id}
+                className="bg-gray-50 rounded-xl p-6 border border-gray-200 hover:border-gray-300 transition-all duration-200"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center mb-3">
+                      <h3 className="text-lg font-semibold text-gray-900 mr-4">
+                        {pod.title}
+                      </h3>
+                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200">
+                        Pending Approval
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                      <div className="flex items-center text-gray-600">
+                        <span className="mr-2">🏷️</span>
+                        <span className="font-mono bg-gray-100 px-2 py-1 rounded text-xs">
+                          {pod.podcastId}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center text-gray-600">
+                        <span className="mr-2">👤</span>
+                        <span className="truncate">Speaker: {pod.speaker}</span>
+                      </div>
+
+                      <div className="flex items-center text-gray-500">
+                        <span className="mr-2">⏰</span>
+                        <span>
+                          Scheduled: {pod.date} {pod.time}
+                        </span>
+                      </div>
+                    </div>
+
+                    {pod.topic && (
+                      <div className="mt-2 text-sm text-gray-600">
+                        <span className="mr-2">💬</span>
+                        <span>Topic: {pod.topic}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex space-x-3 ml-6">
+                    <button
+                      onClick={() => handleApprove(pod.id)}
+                      className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2"
+                    >
+                      <span>✓</span>
+                      <span>Approve</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleReject(pod.id)}
+                      className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2"
+                    >
+                      <span>✗</span>
+                      <span>Reject</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-12">
+            <div className="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-4 flex items-center justify-center text-2xl">
+              ✓
+            </div>
+            <p className="text-gray-500 text-lg">No pending podcast requests</p>
+            <p className="text-gray-400 text-sm mt-2">
+              All podcast requests have been reviewed
+            </p>
+          </div>
+        )}
+        <Navbar />
+      </div>
+    </div>
+  );
+};
+
+export default PodcastApproval;
