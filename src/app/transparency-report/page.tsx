@@ -141,14 +141,6 @@ const TransparencyReport: React.FC = () => {
         >
           CREATE
         </a>
-        <button
-          onClick={() =>
-          setSelectedReport({ title: "Documentation Report" })
-          }
-          className="bg-[#f4c017] text-[#0b2471] px-6 py-3 font-semibold rounded shadow hover:bg-yellow-400"
-        >
-          VIEW
-        </button>
         </div>
       </div>
 
@@ -163,14 +155,6 @@ const TransparencyReport: React.FC = () => {
         >
           CREATE
         </a>
-        <button
-          onClick={() =>
-          setSelectedReport({ title: "Official Receipt Compilation" })
-          }
-          className="bg-[#f4c017] text-[#0b2471] px-6 py-3 font-semibold rounded shadow hover:bg-yellow-400"
-        >
-          VIEW
-        </button>
         </div>
       </div>
 
@@ -185,14 +169,6 @@ const TransparencyReport: React.FC = () => {
         >
           CREATE
         </a>
-        <button
-          onClick={() =>
-          setSelectedReport({ title: "Project Design And Brief" })
-          }
-          className="bg-[#f4c017] text-[#0b2471] px-6 py-3 font-semibold rounded shadow hover:bg-yellow-400"
-        >
-          VIEW
-        </button>
         </div>
       </div>
 
@@ -207,12 +183,6 @@ const TransparencyReport: React.FC = () => {
         >
           CREATE
         </a>
-        <button
-          onClick={() => setSelectedReport({ title: "Attendance Report" })}
-          className="bg-[#f4c017] text-[#0b2471] px-6 py-3 font-semibold rounded shadow hover:bg-yellow-400"
-        >
-          VIEW
-        </button>
         </div>
       </div>
       </div>
