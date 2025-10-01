@@ -259,7 +259,7 @@ export default function CommunityEventPage() {
                     )}
 
                     {/* Event Image */}
-                    <div className="w-full md:w-72 h-48 rounded-xl overflow-hidden flex-shrink-0 mb-4 md:mb-0 md:mr-6">
+                    <div className="w-full md:w-72 h-65 rounded-xl overflow-hidden flex-shrink-0 mb-4 md:mb-0 md:mr-6">
                       <Image
                         src={event.image}
                         alt={event.title}
@@ -294,7 +294,7 @@ export default function CommunityEventPage() {
                           </span>
                           {event.capacity && (
                             <span className="flex items-center gap-2 bg-purple-50 text-purple-700 px-3 py-1 rounded-full">
-                              <Image src="/PeopleIcon.svg" alt="Capacity" width={18} height={18} />
+                              <Image src="/SlotIcon.png" alt="Capacity" width={18} height={18} />
                               {event.capacity} slots
                             </span>
                           )}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { db } from "@/app/Firebase/firebase";
-import { collection, getDocs, addDoc, query, orderBy, Timestamp, updateDoc, doc, deleteDoc, where } from "firebase/firestore";
+import { collection, getDocs, addDoc, query, orderBy, Timestamp, updateDoc, doc, where } from "firebase/firestore";
 import { User, getAuth } from "firebase/auth";
 import Image from "next/image";
 import Navbar from "../Components/Navbar";
@@ -48,6 +48,7 @@ function AnnouncementContent({ user }: { user: User }) {
   const [selectedAnnouncement, setSelectedAnnouncement] = useState<Announcement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, setAuthUser] = useState<User | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
   
   const itemsPerPage = 8;
 
@@ -58,13 +59,12 @@ function AnnouncementContent({ user }: { user: User }) {
         setAuthUser(currentUser);
 
         try {
-          // Log page access with specific page name
           await recordActivityLog({
             action: "View Page",
             details: "User accessed the Announcements page",
             userId: currentUser.uid,
             userEmail: currentUser.email || undefined,
-            category: "user", // Changed to admin since this appears to be an admin page
+            category: "user",
           });
           console.log('✅ Page visit logged for Announcements page');
         } catch (error) {
@@ -93,7 +93,7 @@ function AnnouncementContent({ user }: { user: User }) {
     }
   }, [user.uid]);
 
-  // Initialize user data - SIMPLIFIED (removed duplicate activity logging)
+  // Initialize user data
   useEffect(() => {
     const initializeUser = async () => {
       try {
@@ -155,7 +155,6 @@ function AnnouncementContent({ user }: { user: User }) {
               isArchived: true 
             });
             
-            // Create notification for auto-archiving
             await createNotification(
               'Announcement Auto-Archived',
               `Announcement "${data.title}" was automatically archived due to expiration`,
@@ -173,7 +172,6 @@ function AnnouncementContent({ user }: { user: User }) {
             isArchived: true 
           });
           
-          // Create notification for legacy auto-archiving
           await createNotification(
             'Legacy Announcement Archived',
             `Legacy announcement "${data.title}" was automatically archived (over 30 days old)`,
@@ -202,7 +200,6 @@ function AnnouncementContent({ user }: { user: User }) {
 
       setAnnouncements(fetchedAnnouncements);
 
-      // Log successful fetch (keeping existing detailed logging)
       await recordActivityLog({
         action: 'Fetch Announcements',
         details: `Successfully loaded ${fetchedAnnouncements.length} announcements`,
@@ -215,14 +212,12 @@ function AnnouncementContent({ user }: { user: User }) {
       console.error('Error fetching announcements:', error);
       setError('Failed to load announcements. Please try again.');
       
-      // Create error notification
       await createNotification(
         'Error Loading Announcements',
         'Failed to load announcements. Please refresh the page.',
         'fetch_error'
       );
       
-      // Log error
       await recordActivityLog({
         action: 'Fetch Announcements Error',
         details: `Failed to load announcements: ${error}`,
@@ -272,29 +267,49 @@ function AnnouncementContent({ user }: { user: User }) {
     currentPage * itemsPerPage
   );
 
-  const handleDeleteAnnouncement = async (id: string) => {
+  // Changed from delete to archive
+  const handleArchiveAnnouncement = async (id: string) => {
     try {
-      const announcementToDelete = announcements.find(a => a.id === id);
-      const confirmDelete = window.confirm("Are you sure you want to delete this announcement?");
+      const announcementToArchive = announcements.find(a => a.id === id);
+      const isCurrentlyArchived = announcementToArchive?.archived || announcementToArchive?.isArchived;
       
-      if (confirmDelete) {
-        await deleteDoc(doc(db, "announcements", id));
-        setAnnouncements(prevAnnouncements => prevAnnouncements.filter(announcement => announcement.id !== id));
+      const confirmMessage = isCurrentlyArchived 
+        ? "Are you sure you want to unarchive this announcement?"
+        : "Are you sure you want to archive this announcement?";
+      
+      const confirmArchive = window.confirm(confirmMessage);
+      
+      if (confirmArchive) {
+        // Toggle archive status
+        await updateDoc(doc(db, "announcements", id), {
+          archived: !isCurrentlyArchived,
+          isArchived: !isCurrentlyArchived,
+          archivedAt: !isCurrentlyArchived ? Timestamp.now() : null
+        });
         
-        // Create deletion notification
-        if (announcementToDelete) {
+        // Update local state
+        setAnnouncements(prevAnnouncements => 
+          prevAnnouncements.map(announcement => 
+            announcement.id === id 
+              ? { ...announcement, archived: !isCurrentlyArchived, isArchived: !isCurrentlyArchived }
+              : announcement
+          )
+        );
+        
+        // Create notification
+        if (announcementToArchive) {
           await createNotification(
-            'Announcement Deleted',
-            `Successfully deleted announcement: "${announcementToDelete.title}"`,
-            'announcement_deleted',
+            isCurrentlyArchived ? 'Announcement Unarchived' : 'Announcement Archived',
+            `Successfully ${isCurrentlyArchived ? 'unarchived' : 'archived'} announcement: "${announcementToArchive.title}"`,
+            isCurrentlyArchived ? 'announcement_unarchived' : 'announcement_archived',
             id
           );
         }
         
-        // Log deletion
+        // Log action
         await recordActivityLog({
-          action: 'Delete Announcement',
-          details: `Deleted announcement: ${announcementToDelete?.title}`,
+          action: isCurrentlyArchived ? 'Unarchive Announcement' : 'Archive Announcement',
+          details: `${isCurrentlyArchived ? 'Unarchived' : 'Archived'} announcement: ${announcementToArchive?.title}`,
           userId: user.uid,
           userEmail: user.email || undefined,
           category: 'announcements',
@@ -302,19 +317,17 @@ function AnnouncementContent({ user }: { user: User }) {
         });
       }
     } catch (error) {
-      console.error("Error deleting announcement:", error);
+      console.error("Error archiving announcement:", error);
       
-      // Create error notification
       await createNotification(
-        'Delete Error',
-        'Failed to delete announcement. Please try again.',
-        'delete_error'
+        'Archive Error',
+        'Failed to archive announcement. Please try again.',
+        'archive_error'
       );
       
-      // Log error
       await recordActivityLog({
-        action: 'Delete Announcement Error',
-        details: `Failed to delete announcement: ${error}`,
+        action: 'Archive Announcement Error',
+        details: `Failed to archive announcement: ${error}`,
         userId: user.uid,
         userEmail: user.email || undefined,
         category: 'announcements',
@@ -325,9 +338,8 @@ function AnnouncementContent({ user }: { user: User }) {
 
   const handleFilterChange = async (newFilter: FilterStatus) => {
     setFilterStatus(newFilter);
-    setCurrentPage(1); // Reset to first page when filter changes
+    setCurrentPage(1);
     
-    // Log filter change
     await recordActivityLog({
       action: 'Filter Announcements',
       details: `Changed filter to: ${newFilter}`,
@@ -340,8 +352,8 @@ function AnnouncementContent({ user }: { user: User }) {
   const handleAnnouncementClick = async (announcement: Announcement) => {
     setSelectedAnnouncement(announcement);
     setIsModalOpen(true);
+    setIsEditMode(false);
     
-    // Log announcement view
     await recordActivityLog({
       action: 'View Announcement Details',
       details: `Viewed announcement: ${announcement.title}`,
@@ -349,6 +361,67 @@ function AnnouncementContent({ user }: { user: User }) {
       userEmail: user.email || undefined,
       category: 'announcements'
     });
+  };
+
+  const handleEditClick = () => {
+    setIsEditMode(true);
+  };
+
+  const handleSaveEdit = async (updatedAnnouncement: Announcement) => {
+    try {
+      await updateDoc(doc(db, "announcements", updatedAnnouncement.id), {
+        title: updatedAnnouncement.title,
+        description: updatedAnnouncement.description,
+        body: updatedAnnouncement.body,
+        endDate: updatedAnnouncement.endDate,
+        barangays: updatedAnnouncement.barangays,
+        youthClassifications: updatedAnnouncement.youthClassifications,
+        updatedAt: Timestamp.now()
+      });
+
+      // Update local state
+      setAnnouncements(prevAnnouncements =>
+        prevAnnouncements.map(announcement =>
+          announcement.id === updatedAnnouncement.id ? updatedAnnouncement : announcement
+        )
+      );
+
+      setSelectedAnnouncement(updatedAnnouncement);
+      setIsEditMode(false);
+
+      await createNotification(
+        'Announcement Updated',
+        `Successfully updated announcement: "${updatedAnnouncement.title}"`,
+        'announcement_updated',
+        updatedAnnouncement.id
+      );
+
+      await recordActivityLog({
+        action: 'Update Announcement',
+        details: `Updated announcement: ${updatedAnnouncement.title}`,
+        userId: user.uid,
+        userEmail: user.email || undefined,
+        category: 'announcements',
+        severity: 'medium'
+      });
+    } catch (error) {
+      console.error("Error updating announcement:", error);
+      
+      await createNotification(
+        'Update Error',
+        'Failed to update announcement. Please try again.',
+        'update_error'
+      );
+
+      await recordActivityLog({
+        action: 'Update Announcement Error',
+        details: `Failed to update announcement: ${error}`,
+        userId: user.uid,
+        userEmail: user.email || undefined,
+        category: 'announcements',
+        severity: 'high'
+      });
+    }
   };
 
   const totalPages = Math.ceil(filteredAnnouncements.length / itemsPerPage);
@@ -384,7 +457,6 @@ function AnnouncementContent({ user }: { user: User }) {
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] flex flex-col gap-8 overflow-auto">
       <Navbar />
       
-      {/* Header Section */}
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-3xl font-semibold text-black">Announcements</h1>
@@ -394,7 +466,6 @@ function AnnouncementContent({ user }: { user: User }) {
         </div>
       </div>
 
-      {/* Main Announcements Section */}
       <div className="bg-white p-6 rounded-lg shadow-md mb-1 flex flex-col gap-8">
         <div className="flex justify-between items-center">
           <h2 className="text-2xl font-semibold text-black">List of Announcements</h2>
@@ -404,14 +475,12 @@ function AnnouncementContent({ user }: { user: User }) {
           />
         </div>
 
-        {/* Announcements Grid */}
         <AnnouncementsGrid 
           announcements={displayedAnnouncements}
           onAnnouncementClick={handleAnnouncementClick}
-          onDeleteAnnouncement={handleDeleteAnnouncement}
+          onArchiveAnnouncement={handleArchiveAnnouncement}
         />
 
-        {/* Pagination */}
         {totalPages > 1 && (
           <PaginationControls 
             currentPage={currentPage}
@@ -420,27 +489,30 @@ function AnnouncementContent({ user }: { user: User }) {
           />
         )}
 
-        {/* Empty State */}
         {displayedAnnouncements.length === 0 && (
           <EmptyState />
         )}
       </div>
 
-      {/* Announcement Details Modal */}
       {isModalOpen && selectedAnnouncement && (
         <AnnouncementModal
           announcement={selectedAnnouncement}
-          onClose={() => setIsModalOpen(false)}
+          onClose={() => {
+            setIsModalOpen(false);
+            setIsEditMode(false);
+          }}
+          isEditMode={isEditMode}
+          onEditClick={handleEditClick}
+          onSaveEdit={handleSaveEdit}
+          onCancelEdit={() => setIsEditMode(false)}
         />
       )}
 
-      {/* Floating Action Button */}
       <FloatingActionButton />
     </div>
   );
 }
 
-// Filter Dropdown Component
 function FilterDropdown({ 
   filterStatus, 
   onFilterChange 
@@ -469,15 +541,14 @@ function FilterDropdown({
   );
 }
 
-// Announcements Grid Component
 function AnnouncementsGrid({ 
   announcements, 
   onAnnouncementClick, 
-  onDeleteAnnouncement 
+  onArchiveAnnouncement 
 }: {
   announcements: Announcement[];
   onAnnouncementClick: (announcement: Announcement) => void;
-  onDeleteAnnouncement: (id: string) => void;
+  onArchiveAnnouncement: (id: string) => void;
 }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -517,11 +588,15 @@ function AnnouncementsGrid({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDeleteAnnouncement(announcement.id);
+                    onArchiveAnnouncement(announcement.id);
                   }}
-                  className="bg-red-500 text-white text-xs px-2 py-1 rounded-full hover:bg-red-600 transition-colors"
+                  className={`text-white text-xs px-2 py-1 rounded-full transition-colors ${
+                    (announcement.archived || announcement.isArchived)
+                      ? 'bg-green-500 hover:bg-green-600'
+                      : 'bg-orange-500 hover:bg-orange-600'
+                  }`}
                 >
-                  Delete
+                  {(announcement.archived || announcement.isArchived) ? 'Unarchive' : 'Archive'}
                 </button>
               </div>
             </div>
@@ -532,7 +607,6 @@ function AnnouncementsGrid({
   );
 }
 
-// Pagination Controls Component
 function PaginationControls({ 
   currentPage, 
   totalPages, 
@@ -583,7 +657,6 @@ function PaginationControls({
   );
 }
 
-// Empty State Component
 function EmptyState() {
   return (
     <div className="text-center py-12">
@@ -598,7 +671,6 @@ function EmptyState() {
   );
 }
 
-// Floating Action Button Component
 function FloatingActionButton() {
   return (
     <div className="fixed bottom-8 right-8">
@@ -615,23 +687,52 @@ function FloatingActionButton() {
   );
 }
 
-// Announcement Modal Component
 function AnnouncementModal({ 
   announcement, 
-  onClose 
+  onClose,
+  isEditMode,
+  onEditClick,
+  onSaveEdit,
+  onCancelEdit
 }: { 
   announcement: Announcement; 
-  onClose: () => void; 
+  onClose: () => void;
+  isEditMode: boolean;
+  onEditClick: () => void;
+  onSaveEdit: (announcement: Announcement) => void;
+  onCancelEdit: () => void;
 }) {
+  const [editedAnnouncement, setEditedAnnouncement] = useState(announcement);
+
+  const handleInputChange = (field: keyof Announcement, value: string | string[]) => {
+    setEditedAnnouncement(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  };
+
+  const handleSave = () => {
+    onSaveEdit(editedAnnouncement);
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-auto">
         {/* Header */}
         <div className="flex justify-between items-start mb-6">
-          <h3 className="text-2xl font-semibold text-[#1167B1]">{announcement.title}</h3>
+          {isEditMode ? (
+            <input
+              type="text"
+              value={editedAnnouncement.title}
+              onChange={(e) => handleInputChange('title', e.target.value)}
+              className="text-2xl font-semibold text-[#1167B1] border-b-2 border-[#1167B1] focus:outline-none w-full mr-4"
+            />
+          ) : (
+            <h3 className="text-2xl font-semibold text-[#1167B1]">{announcement.title}</h3>
+          )}
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+            className="text-gray-500 hover:text-gray-700 text-2xl font-bold flex-shrink-0"
           >
             ×
           </button>
@@ -653,7 +754,15 @@ function AnnouncementModal({
         {/* Content */}
         <div className="mb-6">
           <h4 className="font-semibold text-lg mb-2">Description</h4>
-          <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{announcement.body}</p>
+          {isEditMode ? (
+            <textarea
+              value={editedAnnouncement.body}
+              onChange={(e) => handleInputChange('body', e.target.value)}
+              className="w-full p-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-[#1167B1] min-h-[150px]"
+            />
+          ) : (
+            <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{announcement.body}</p>
+          )}
         </div>
 
         {/* Details */}
@@ -662,8 +771,20 @@ function AnnouncementModal({
             <h5 className="font-semibold text-black mb-2">Announcement Details</h5>
             <div className="space-y-2 text-sm">
               <p><strong>Created:</strong> {announcement.createdAt.toDate().toLocaleDateString()}</p>
-              {announcement.endDate && (
-                <p><strong>Expires:</strong> {new Date(announcement.endDate).toLocaleDateString()}</p>
+              {isEditMode ? (
+                <div>
+                  <strong>Expires:</strong>
+                  <input
+                    type="date"
+                    value={editedAnnouncement.endDate || ''}
+                    onChange={(e) => handleInputChange('endDate', e.target.value)}
+                    className="ml-2 p-1 border border-gray-300 rounded"
+                  />
+                </div>
+              ) : (
+                announcement.endDate && (
+                  <p><strong>Expires:</strong> {new Date(announcement.endDate).toLocaleDateString()}</p>
+                )
               )}
               <p><strong>Status:</strong> 
                 <span className={`ml-2 px-2 py-1 rounded-full text-xs ${
@@ -681,44 +802,89 @@ function AnnouncementModal({
             <h5 className="font-semibold text-black mb-2">Target Audience</h5>
             <div className="space-y-3 text-sm">
               <div>
-                <p className="font-medium">Barangays:</p>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {announcement.barangays && announcement.barangays.length > 0 ? 
-                    announcement.barangays.map((barangay, index) => (
-                      <span key={index} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
-                        {barangay}
-                      </span>
-                    )) : 
-                    <span className="text-gray-500 text-xs">All Barangays</span>
-                  }
-                </div>
+                <p className="font-medium mb-1">Barangays:</p>
+                {isEditMode ? (
+                  <input
+                    type="text"
+                    value={editedAnnouncement.barangays?.join(', ') || ''}
+                    onChange={(e) => handleInputChange('barangays', e.target.value.split(',').map(s => s.trim()))}
+                    placeholder="Enter barangays separated by commas"
+                    className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:border-[#1167B1]"
+                  />
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {announcement.barangays && announcement.barangays.length > 0 ? 
+                      announcement.barangays.map((barangay, index) => (
+                        <span key={index} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
+                          {barangay}
+                        </span>
+                      )) : 
+                      <span className="text-gray-500 text-xs">All Barangays</span>
+                    }
+                  </div>
+                )}
               </div>
               
               <div>
-                <p className="font-medium">Youth Classifications:</p>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {announcement.youthClassifications && announcement.youthClassifications.length > 0 ? 
-                    announcement.youthClassifications.map((classification, index) => (
-                      <span key={index} className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full">
-                        {classification}
-                      </span>
-                    )) : 
-                    <span className="text-gray-500 text-xs">All Classifications</span>
-                  }
-                </div>
+                <p className="font-medium mb-1">Youth Classifications:</p>
+                {isEditMode ? (
+                  <input
+                    type="text"
+                    value={editedAnnouncement.youthClassifications?.join(', ') || ''}
+                    onChange={(e) => handleInputChange('youthClassifications', e.target.value.split(',').map(s => s.trim()))}
+                    placeholder="Enter classifications separated by commas"
+                    className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:border-[#1167B1]"
+                  />
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {announcement.youthClassifications && announcement.youthClassifications.length > 0 ? 
+                      announcement.youthClassifications.map((classification, index) => (
+                        <span key={index} className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full">
+                          {classification}
+                        </span>
+                      )) : 
+                      <span className="text-gray-500 text-xs">All Classifications</span>
+                    }
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
 
         {/* Actions */}
-        <div className="flex justify-end">
-          <button
-            className="px-6 py-2 bg-[#1167B1] text-white rounded-md hover:bg-[#0d4c8b] transition-colors"
-            onClick={onClose}
-          >
-            Close
-          </button>
+        <div className="flex justify-end gap-3">
+          {isEditMode ? (
+            <>
+              <button
+                className="px-6 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors"
+                onClick={onCancelEdit}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                onClick={handleSave}
+              >
+                Save Changes
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="px-6 py-2 bg-[#1167B1] text-white rounded-md hover:bg-[#0d4c8b] transition-colors"
+                onClick={onEditClick}
+              >
+                Edit
+              </button>
+              <button
+                className="px-6 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors"
+                onClick={onClose}
+              >
+                Close
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -433,6 +433,13 @@ function ManageEventContent() {
 
   return (
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] flex flex-col gap-8 overflow-auto">
+              {/* Header */}
+        <header className="mb-0">
+          <h1 className="text-3xl font-bold text-[#08326A]">Community Events</h1>
+          <p className="text-lg text-gray-600 mt-2">
+            The hub that connects kabataan with events and activities led by the SK Federation.
+          </p>
+        </header>
       <Navbar />
 
       {loadingEvent && (
@@ -450,7 +457,7 @@ function ManageEventContent() {
       {selectedEvent && !loadingEvent && !eventError && (
         <div className="bg-white rounded-xl p-6 mb-1 shadow w-full">
           <div className="flex flex-col sm:flex-row gap-6">
-            <div className="w-full sm:w-[400px] sm:h-[250px] relative">
+            <div className="w-full sm:w-[500px] sm:h-[350px] relative">
               <Image
                 src={selectedEvent.image}
                 alt={selectedEvent.title}
@@ -515,7 +522,7 @@ function ManageEventContent() {
                   {selectedEvent.capacity && (
                     <div className="flex items-center">
                       <Image
-                        src="/PeopleIcon.svg"
+                        src="/SlotIcon.png"
                         alt="Capacity Icon"
                         width={20}
                         height={20}
@@ -529,7 +536,7 @@ function ManageEventContent() {
                   {selectedEvent.deadline && (
                     <div className="flex items-center">
                       <Image
-                        src="/DeadlineIcon.svg"
+                        src="/DeadlineIcon.png"
                         alt="Deadline Icon"
                         width={20}
                         height={20}
@@ -661,7 +668,7 @@ function ManageEventContent() {
       )}
 
       {isEditModalOpen && editForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-[#e7f0fa] rounded-2xl w-full max-w-5xl p-6 shadow-lg border-2 border-[#0A2F7A] relative max-h-[90vh] overflow-y-auto">
             <h2 className="text-3xl font-bold text-[#0A2F7A] mb-6 text-center mt-2">
               Edit Event

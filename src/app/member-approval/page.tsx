@@ -132,6 +132,7 @@ const LoadingSpinner = () => (
 // --- Enhanced Main Component ---
 export default function MemberApproval() {
   const [userPosition, setUserPosition] = useState<string>("");
+  const [userBarangay, setUserBarangay] = useState<string>(""); // New state for admin's barangay
   const [members, setMembers] = useState<Member[]>([])
   const [actions, setActions] = useState<Record<string, ActionData>>({})
   const [selectedMember, setSelectedMember] = useState<Member | null>(null)
@@ -141,7 +142,7 @@ export default function MemberApproval() {
   const [showDisapprovalModal, setShowDisapprovalModal] = useState(false)
   const [currentDisapprovalMember, setCurrentDisapprovalMember] = useState<string>("")
   const [disapprovalMessage, setDisapprovalMessage] = useState("")
-  const [currentUser, setCurrentUser] = useState<User | null>(null) // Track current user
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [userDocId, setUserDocId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -179,12 +180,25 @@ export default function MemberApproval() {
     return password;
   };
 
-  // --- Enhanced Fetch Members Function ---
+  // --- Enhanced Fetch Members Function with Barangay Filter ---
   const fetchMembers = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
-      const querySnapshot = await getDocs(collection(db, "conUsers"))
+      let querySnapshot;
+      
+      // If admin has a specific barangay, filter by that barangay
+      if (userBarangay && userBarangay.trim() !== '') {
+        console.log('🏘️ Filtering members by barangay:', userBarangay);
+        const membersRef = collection(db, "conUsers");
+        const barangayQuery = query(membersRef, where("barangay", "==", userBarangay));
+        querySnapshot = await getDocs(barangayQuery);
+      } else {
+        // If no barangay or super admin, fetch all members
+        console.log('🌍 Fetching all members (super admin or no barangay specified)');
+        querySnapshot = await getDocs(collection(db, "conUsers"));
+      }
+
       const memberList: Member[] = querySnapshot.docs.map((docSnap) => {
         const data = docSnap.data()
         return {
@@ -216,7 +230,9 @@ export default function MemberApproval() {
       if (userDocId) {
         await addDoc(collection(db, "notifications"), {
           userId: userDocId,
-          message: `Successfully loaded ${memberList.length} pending member applications`,
+          message: userBarangay 
+            ? `Successfully loaded ${memberList.length} pending applications from ${userBarangay}` 
+            : `Successfully loaded ${memberList.length} pending member applications`,
           type: "data_fetch",
           createdAt: Timestamp.now(),
           read: false
@@ -227,7 +243,9 @@ export default function MemberApproval() {
       if (currentUser) {
         await recordActivityLog({
           action: 'Fetch Pending Applications',
-          details: `Successfully loaded ${memberList.length} pending member applications`,
+          details: userBarangay 
+            ? `Successfully loaded ${memberList.length} pending applications from ${userBarangay}`
+            : `Successfully loaded ${memberList.length} pending member applications`,
           userId: currentUser.uid,
           userEmail: currentUser.email || undefined,
           category: 'user'
@@ -263,20 +281,20 @@ export default function MemberApproval() {
     } finally {
       setIsLoading(false)
     }
-  }, [currentUser, userDocId])
+  }, [currentUser, userDocId, userBarangay])
 
-  // --- Enhanced Fetch User Position Function ---
+  // --- Enhanced Fetch User Position and Barangay Function ---
   const fetchUserPosition = useCallback(async () => {
     setIsLoadingPosition(true)
     try {
       const user = auth.currentUser
-      console.log("Current user:", user)
+      console.log("🔍 Current user:", user)
 
       if (user) {
-        setCurrentUser(user) // Store the current user
-        console.log("Fetching position for user ID:", user.uid)
+        setCurrentUser(user)
+        console.log("📋 Fetching position and barangay for user ID:", user.uid)
         
-        // Get user document ID for notifications
+        // Check in adminUsers collection first
         try {
           const adminUsersRef = collection(db, 'adminUsers');
           const q = query(adminUsersRef, where('uid', '==', user.uid));
@@ -285,11 +303,15 @@ export default function MemberApproval() {
           if (!querySnapshot.empty) {
             setUserDocId(querySnapshot.docs[0].id);
             const adminData = querySnapshot.docs[0].data();
+            
             setUserPosition(adminData.position || "");
-            console.log("Admin user position set to:", adminData.position);
+            setUserBarangay(adminData.barangay || ""); // Set admin's barangay
+            
+            console.log("👤 Admin user position:", adminData.position);
+            console.log("🏘️ Admin user barangay:", adminData.barangay);
           }
         } catch (error) {
-          console.error('Error fetching admin user document:', error);
+          console.error('❌ Error fetching admin user document:', error);
         }
 
         // Log page access
@@ -301,16 +323,18 @@ export default function MemberApproval() {
           category: 'user'
         });
 
-        // Check in adminUsers collection first
+        // Check in adminUsers collection
         const adminUsersQuery = await getDocs(collection(db, "adminUsers"))
         let userFound = false
         
         for (const adminDoc of adminUsersQuery.docs) {
           const adminData = adminDoc.data()
           if (adminData.uid === user.uid) {
-            console.log("Admin user document data:", adminData)
+            console.log("📄 Admin user document data:", adminData)
             setUserPosition(adminData.position || "")
-            console.log("Admin user position set to:", adminData.position)
+            setUserBarangay(adminData.barangay || "") // Set barangay from admin data
+            console.log("👤 Admin user position set to:", adminData.position)
+            console.log("🏘️ Admin user barangay set to:", adminData.barangay)
             userFound = true
             break
           }
@@ -321,28 +345,31 @@ export default function MemberApproval() {
           const userDocRef = doc(db, "ApprovedUsers", user.uid)
           const userDoc = await getDoc(userDocRef)
 
-          console.log("User document exists in ApprovedUsers:", userDoc.exists())
+          console.log("📋 User document exists in ApprovedUsers:", userDoc.exists())
 
           if (userDoc.exists()) {
             const data = userDoc.data()
-            console.log("User document data:", data)
-            console.log("Position field value:", data.position)
+            console.log("📄 User document data:", data)
 
             setUserPosition(data.position || "")
-            console.log("User position set to:", data.position)
+            setUserBarangay(data.barangay || "") // Set barangay from approved user data
+            console.log("👤 User position set to:", data.position)
+            console.log("🏘️ User barangay set to:", data.barangay)
           } else {
-            console.log("User document does not exist in either collection")
+            console.log("❌ User document does not exist in either collection")
             setUserPosition("")
+            setUserBarangay("")
           }
         }
       } else {
-        console.log("No authenticated user found")
+        console.log("❌ No authenticated user found")
         setCurrentUser(null)
         setUserPosition("")
+        setUserBarangay("")
         setUserDocId(null)
       }
     } catch (error) {
-      console.error("Error fetching user position:", error)
+      console.error("❌ Error fetching user position:", error)
       setError("Failed to fetch user permissions.")
     } finally {
       setIsLoadingPosition(false)
@@ -353,12 +380,13 @@ export default function MemberApproval() {
     // Wait for auth state to be ready before fetching position
     const unsubscribe = auth.onAuthStateChanged((user) => {
       if (user) {
-        console.log("Auth state changed, user is authenticated:", user.uid)
+        console.log("🔐 Auth state changed, user is authenticated:", user.uid)
         fetchUserPosition()
       } else {
-        console.log("Auth state changed, no user authenticated")
+        console.log("❌ Auth state changed, no user authenticated")
         setCurrentUser(null)
         setUserPosition("")
+        setUserBarangay("")
         setUserDocId(null)
         setIsLoadingPosition(false)
       }
@@ -368,10 +396,10 @@ export default function MemberApproval() {
   }, [fetchUserPosition])
 
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && !isLoadingPosition) {
       fetchMembers()
     }
-  }, [currentUser, fetchMembers])
+  }, [currentUser, fetchMembers, isLoadingPosition])
 
   // --- Enhanced Sorting Logic ---
   const handleSort = async (key: keyof Member) => {
@@ -863,6 +891,9 @@ export default function MemberApproval() {
             <h1 className="text-3xl font-semibold text-black">Member Approval</h1>
             <p className="text-lg text-gray-800 mt-1">
               Reviewing and managing member requests ({filteredMembers.length} constituents)
+              {userBarangay && (
+                <span className="text-[#1167B1] font-medium"> - {userBarangay} only</span>
+              )}
             </p>
             {/* Add link to approved users */}
             <div className="mt-2">
@@ -886,30 +917,76 @@ export default function MemberApproval() {
             </div>
             {currentUser && (
               <div className="mt-2 text-sm text-gray-600">
-                Approving as: <span className="font-medium">{currentUser.uid}</span>
+                <div>Approving as: <span className="font-medium">{currentUser.uid}</span></div>
+                {userBarangay && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-[#1167B1] text-white">
+                      🏘️ {userBarangay}
+                    </span>
+                    <span className="text-xs text-gray-500">Showing members from your barangay only</span>
+                  </div>
+                )}
+                {!userBarangay && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-600 text-white">
+                      🌍 All Barangays
+                    </span>
+                    <span className="text-xs text-gray-500">Super admin - can view all members</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
+
+        {/* Barangay Filter Notice */}
+        {userBarangay && (
+          <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+            <div className="flex">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-blue-800">
+                  Barangay-Specific Access
+                </h3>
+                <div className="mt-2 text-sm text-blue-700">
+                  <p>
+                    You are viewing member applications from <strong>{userBarangay}</strong> only. 
+                    You can only approve/disapprove members from your assigned barangay.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Error Message */}
         {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">{error}</div>}
         
         {/* Main Content Card */}
         <div className="bg-white rounded-2xl shadow-md p-6 w-full overflow-x-auto">
-          <h1 className="text-lg font-semibold text-black mb-4">SK Constituents List</h1>
+          <h1 className="text-lg font-semibold text-black mb-4">
+            SK Constituents List
+            {userBarangay && <span className="text-[#1167B1] ml-2">- {userBarangay}</span>}
+          </h1>
 
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-4">
             <div className="flex flex-col sm:flex-row gap-2 flex-1">
               <input
                 type="text"
-                placeholder="Search by name, email, SK ID, contact, or address..."
+                placeholder={`Search ${userBarangay ? `in ${userBarangay}` : 'all members'} by name, email, SK ID, contact, or address...`}
                 value={searchQuery}
                 onChange={(e) => handleSearch(e.target.value)}
                 className="border border-gray-300 rounded px-3 py-2 text-sm flex-1 min-w-64"
               />
               <div className="flex items-center gap-2 text-sm text-gray-600">
-                <span>Showing {filteredMembers.length} of {members.length} applications</span>
+                <span>
+                  Showing {filteredMembers.length} of {members.length} applications
+                  {userBarangay && <span className="text-[#1167B1]"> from {userBarangay}</span>}
+                </span>
                 {searchQuery && (
                   <button
                     onClick={() => {
@@ -1015,7 +1092,12 @@ export default function MemberApproval() {
                   {filteredMembers.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
-                        {searchQuery ? `No constituents found matching "${searchQuery}"` : "No constituents available."}
+                        {searchQuery 
+                          ? `No constituents found matching "${searchQuery}"${userBarangay ? ` in ${userBarangay}` : ''}`
+                          : userBarangay 
+                            ? `No pending applications found for ${userBarangay}.`
+                            : "No constituents available."
+                        }
                       </td>
                     </tr>
                   ) : (
@@ -1024,7 +1106,11 @@ export default function MemberApproval() {
                         <td className="px-4 py-3 text-black font-medium">{formatFullName(member)}</td>
                         <td className="px-4 py-3 text-black font-mono">{member.skId}</td>
                         <td className="px-4 py-3 text-black">{member.birthday}</td>
-                        <td className="px-4 py-3 text-black">{formatFullAddress(member)}</td>
+                        <td className="px-4 py-3 text-black">
+                          <span className={member.barangay === userBarangay ? "font-semibold text-[#1167B1]" : ""}>
+                            {formatFullAddress(member)}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 text-black">{member.email}</td>
                         <td className="px-4 py-3 text-black">{member.contact}</td>
                         <td className="px-4 py-3">
@@ -1073,7 +1159,10 @@ export default function MemberApproval() {
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
                 <div className="text-center">
                   <span className="font-semibold text-[#1167B1]">{members.length}</span>
-                  <p className="text-gray-600">Total Applications</p>
+                  <p className="text-gray-600">
+                    Total Applications
+                    {userBarangay && <br />}<span className="text-xs text-[#1167B1]">{userBarangay}</span>
+                  </p>
                 </div>
                 <div className="text-center">
                   <span className="font-semibold text-green-600">
@@ -1089,9 +1178,11 @@ export default function MemberApproval() {
                 </div>
                 <div className="text-center">
                   <span className="font-semibold text-[#1167B1]">
-                    {new Set(members.map(m => m.barangay)).size}
+                    {userBarangay ? 1 : new Set(members.map(m => m.barangay)).size}
                   </span>
-                  <p className="text-gray-600">Unique Barangays</p>
+                  <p className="text-gray-600">
+                    {userBarangay ? 'Your Barangay' : 'Unique Barangays'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1169,6 +1260,9 @@ export default function MemberApproval() {
 
               <h2 className="text-2xl font-bold text-black mb-6 text-center pr-12">
                 ID Documents - {formatFullName(selectedMember)}
+                {selectedMember.barangay === userBarangay && (
+                  <span className="text-[#1167B1] text-lg ml-2">({selectedMember.barangay})</span>
+                )}
               </h2>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1244,7 +1338,10 @@ export default function MemberApproval() {
                 </div>
                 <div className="mt-2">
                   <div>
-                    <span className="font-medium">Address:</span> {formatFullAddress(selectedMember)}
+                    <span className="font-medium">Address:</span> 
+                    <span className={selectedMember.barangay === userBarangay ? "font-semibold text-[#1167B1] ml-1" : "ml-1"}>
+                      {formatFullAddress(selectedMember)}
+                    </span>
                   </div>
                 </div>
                 {selectedMember.submittedAt && (
@@ -1277,7 +1374,7 @@ export default function MemberApproval() {
               <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                 <p className="text-sm text-yellow-800 text-center">
                   You are about to process {selectedActionsCount} action{selectedActionsCount !== 1 ? "s" : ""} for SK
-                  constituents. This cannot be undone.
+                  constituents{userBarangay ? ` from ${userBarangay}` : ''}. This cannot be undone.
                   {isEmailConfigured ? " Users will receive email notifications about their application status." : " Note: Email notifications are disabled."}
                 </p>
                 {currentUser && (
@@ -1300,43 +1397,43 @@ export default function MemberApproval() {
                   className="flex-1 bg-[#1167B1] text-white text-lg font-semibold py-3 rounded-md hover:bg-[#0e5290] transition disabled:bg-gray-400"
                   disabled={isProcessing || !currentUser}
                 >
-                  {isProcessing ? "Processing..." : "Confirm"}
+                  {isProcessing ? "Processing..." : "Confirm All Actions"}
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* --- Enhanced Success Modal --- */}
+        {/* Success Modal */}
         {showSuccessModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#e7f0fa] rounded-2xl w-full max-w-md p-6 shadow-lg border-2 border-[#0A2F7A] relative">
+            <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-lg border-2 border-green-600 relative">
               <button
                 onClick={() => setShowSuccessModal(false)}
-                className="absolute top-4 right-4 text-white bg-red-600 rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-700 transition"
+                className="absolute top-4 right-4 text-white bg-green-600 rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-green-700 transition"
               >
                 ✕
               </button>
 
-              <div className="text-center">
-                <div className="mx-auto mb-4 w-16 h-16 bg-green-100 rounded-full flex items-center justify-center">
-                  <span className="text-green-600 text-2xl">✓</span>
-                </div>
-                <h2 className="text-2xl font-bold text-black mb-2">Success!</h2>
-                <p className="text-gray-600 mb-4">
-                  All actions have been processed successfully. The constituents list has been updated.
-                  {isEmailConfigured ? " Users have been notified about their application status via email." : ""}
-                  {currentUser && (
-                    <span className="block mt-2 text-sm">
-                      Approvals tracked under UID: <span className="font-mono text-blue-600">{currentUser.uid}</span>
-                    </span>
-                  )}
+              <h2 className="text-2xl font-bold text-green-600 mb-4 text-center">
+                Actions Processed Successfully
+              </h2>
+
+              <div className="mb-4 text-center">
+                <svg className="w-16 h-16 mx-auto text-green-600" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93C6.51 19.93 4 17.42 4 15h2c0 2.21 1.79 4 4 4v1.93zM12 4v8.59l-3.29-3.29-1.42 1.42L12 14l6.71-6.71-1.42-1.42L12 4z"/>
+                </svg>
+                <p className="text-gray-700 mt-2">
+                  The selected actions for the member applications have been processed successfully.
                 </p>
+              </div>
+
+              <div className="flex gap-3">
                 <button
                   onClick={() => setShowSuccessModal(false)}
-                  className="bg-[#1167B1] text-white px-6 py-2 rounded-md hover:bg-[#0e5290] transition"
+                  className="flex-1 bg-[#1167B1] text-white text-lg font-semibold py-3 rounded-md hover:bg-[#0e5a99] transition"
                 >
-                  Continue
+                  Close
                 </button>
               </div>
             </div>

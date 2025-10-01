@@ -34,6 +34,7 @@ interface CompiledEvent {
   feedbackCount: number;
   averageRatings: Record<string, number>;
   overallRating: number;
+  answers?: string[];
 }
 
 const SentimentAnalyzer: React.FC = () => {
@@ -889,6 +890,36 @@ const SentimentAnalyzer: React.FC = () => {
                   </div>
                 </div>
               )}
+
+                {/* Individual Responses */}
+                <div className="mt-4">
+                <h2 className="text-xl font-semibold mb-2">Individual Responses</h2>
+                {selectedEvent.feedbacks && selectedEvent.feedbacks.length > 0 ? (
+                  selectedEvent.feedbacks.map((feedback, idx) => (
+                  <div key={feedback.feedbackId || idx} className="p-2 border rounded mb-2">
+                    {feedback.comments && (
+                    <p className="mb-1">
+                      <strong>Comment:</strong> {feedback.comments}
+                    </p>
+                    )}
+                    {feedback.ratings && (
+                    <div>
+                      <strong>Ratings:</strong>
+                      <ul className="list-disc list-inside">
+                      {Object.entries(feedback.ratings).map(([category, rating]) => (
+                        <li key={category}>
+                        {category}: {rating}/5
+                        </li>
+                      ))}
+                      </ul>
+                    </div>
+                    )}
+                  </div>
+                  ))
+                ) : (
+                  <p>No responses available.</p>
+                )}
+                </div>
 
               {/* Download buttons */}
               <div className="flex justify-center gap-4 mt-6">

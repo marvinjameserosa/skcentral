@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useEffect, ChangeEvent } from 'react';
-import { collection, query, where, getDocs, updateDoc, doc, Timestamp, orderBy, limit } from 'firebase/firestore';
+import { collection, query, where, getDocs, updateDoc, doc, Timestamp, orderBy } from 'firebase/firestore';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { db, auth } from '@/app/Firebase/firebase';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Navbar from '../Components/Navbar';
 import RequireAuth from '../Components/RequireAuth';
 import Image from 'next/image';
+import { recordActivityLog } from '@/app/Components/recordActivityLog';
 
 interface IUserData {
   name: string;
@@ -26,11 +27,14 @@ interface IUserData {
 interface INotification {
   id: string;
   title: string;
-  body: string;
+  message: string; // Changed from 'body' to 'message' to match chat notifications
   type: string;
   createdAt: Timestamp;
   read: boolean;
   userId: string;
+  sentBy?: string;
+  sentByEmail?: string;
+  chatGroup?: string;
 }
 
 export default function UserProfile() {
@@ -38,7 +42,8 @@ export default function UserProfile() {
   const [loading, setLoading] = useState(true);
   const [defaultProfilePicture, setDefaultProfilePicture] = useState('/ExampleProfile.png');
   const [notifications, setNotifications] = useState<INotification[]>([]);
-  const [, setCurrentUser] = useState<User | null>(null);
+  const [allNotifications, setAllNotifications] = useState<INotification[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   // Modal states
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -46,6 +51,12 @@ export default function UserProfile() {
   const [showModal, setShowModal] = useState(false);
   const [showIdCard, setShowIdCard] = useState(false);
   const [generatedIdImage, setGeneratedIdImage] = useState<string | null>(null);
+  const [showAllNotifications, setShowAllNotifications] = useState(false);
+
+  // Notification filter states
+  const [notificationFilter, setNotificationFilter] = useState<'all' | 'unread' | 'read'>('all');
+  const [notificationTypeFilter, setNotificationTypeFilter] = useState<'all' | 'announcement' | 'system' | 'admin'>('all');
+  const [notificationSearch, setNotificationSearch] = useState('');
 
   // Firestore reference for updating
   const [userDocId, setUserDocId] = useState<string | null>(null);
@@ -90,6 +101,21 @@ export default function UserProfile() {
 
             // Fetch notifications
             await fetchNotifications(user.uid);
+            await fetchAllNotifications(user.uid);
+
+            // Log profile view activity
+            recordActivityLog({
+              action: "Viewed User Profile",
+              details: "User accessed their profile page",
+              userId: user.uid,
+              userEmail: user.email || undefined,
+              category: "user",
+              severity: "low",
+              metadata: {
+                profileSection: "main",
+                timestamp: new Date().toISOString()
+              }
+            });
           } else {
             console.log('No such user document!');
             setUserData(null);
@@ -111,32 +137,256 @@ export default function UserProfile() {
   const fetchNotifications = async (userId: string) => {
     try {
       const notificationsRef = collection(db, 'notifications');
-      const q = query(
+      
+      // Create separate queries for user-specific and global notifications
+      const userNotificationsQuery = query(
         notificationsRef,
-        where('userId', 'in', [userId, 'all']),
-        orderBy('createdAt', 'desc'),
-        limit(10)
+        where('userId', '==', userId),
+        orderBy('createdAt', 'desc')
       );
       
-      const querySnapshot = await getDocs(q);
+      const globalNotificationsQuery = query(
+        notificationsRef,
+        where('userId', '==', 'all'),
+        orderBy('createdAt', 'desc')
+      );
+      
+      // Execute both queries
+      const [userSnapshot, globalSnapshot] = await Promise.all([
+        getDocs(userNotificationsQuery),
+        getDocs(globalNotificationsQuery)
+      ]);
+      
       const fetchedNotifications: INotification[] = [];
       
-      querySnapshot.forEach((doc) => {
+      // Process user-specific notifications
+      userSnapshot.forEach((doc) => {
         const data = doc.data();
         fetchedNotifications.push({
           id: doc.id,
           title: data.title || '',
-          body: data.body || '',
+          message: data.message || data.body || '', // Support both field names
           type: data.type || 'info',
           createdAt: data.createdAt as Timestamp,
           read: data.read || false,
-          userId: data.userId || ''
+          userId: data.userId || '',
+          sentBy: data.sentBy,
+          sentByEmail: data.sentByEmail,
+          chatGroup: data.chatGroup
         });
       });
       
-      setNotifications(fetchedNotifications);
+      // Process global notifications
+      globalSnapshot.forEach((doc) => {
+        const data = doc.data();
+        fetchedNotifications.push({
+          id: doc.id,
+          title: data.title || '',
+          message: data.message || data.body || '',
+          type: data.type || 'announcement',
+          createdAt: data.createdAt as Timestamp,
+          read: data.read || false,
+          userId: 'all', // Keep as 'all' to identify global notifications
+          sentBy: data.sentBy,
+          sentByEmail: data.sentByEmail,
+          chatGroup: data.chatGroup
+        });
+      });
+      
+      // Sort all notifications by creation date (newest first)
+      fetchedNotifications.sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+      
+      // Take only the 5 most recent for preview
+      const recentNotifications = fetchedNotifications.slice(0, 5);
+      setNotifications(recentNotifications);
+      
     } catch (error) {
       console.error('Error fetching notifications:', error);
+    }
+  };
+
+  const fetchAllNotifications = async (userId: string) => {
+    try {
+      const notificationsRef = collection(db, 'notifications');
+      
+      // Create separate queries for user-specific and global notifications
+      const userNotificationsQuery = query(
+        notificationsRef,
+        where('userId', '==', userId),
+        orderBy('createdAt', 'desc')
+      );
+      
+      const globalNotificationsQuery = query(
+        notificationsRef,
+        where('userId', '==', 'all'),
+        orderBy('createdAt', 'desc')
+      );
+      
+      // Execute both queries
+      const [userSnapshot, globalSnapshot] = await Promise.all([
+        getDocs(userNotificationsQuery),
+        getDocs(globalNotificationsQuery)
+      ]);
+      
+      const fetchedNotifications: INotification[] = [];
+      
+      // Process user-specific notifications
+      userSnapshot.forEach((doc) => {
+        const data = doc.data();
+        fetchedNotifications.push({
+          id: doc.id,
+          title: data.title || '',
+          message: data.message || data.body || '',
+          type: data.type || 'info',
+          createdAt: data.createdAt as Timestamp,
+          read: data.read || false,
+          userId: data.userId || '',
+          sentBy: data.sentBy,
+          sentByEmail: data.sentByEmail,
+          chatGroup: data.chatGroup
+        });
+      });
+      
+      // Process global notifications
+      globalSnapshot.forEach((doc) => {
+        const data = doc.data();
+        fetchedNotifications.push({
+          id: doc.id,
+          title: data.title || '',
+          message: data.message || data.body || '',
+          type: data.type || 'announcement',
+          createdAt: data.createdAt as Timestamp,
+          read: data.read || false,
+          userId: 'all',
+          sentBy: data.sentBy,
+          sentByEmail: data.sentByEmail,
+          chatGroup: data.chatGroup
+        });
+      });
+      
+      // Sort all notifications by creation date (newest first)
+      fetchedNotifications.sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+      
+      setAllNotifications(fetchedNotifications);
+    } catch (error) {
+      console.error('Error fetching all notifications:', error);
+    }
+  };
+
+  // Filter notifications based on current filters
+  const getFilteredNotifications = () => {
+    let filtered = [...allNotifications];
+
+    // Filter by read status
+    if (notificationFilter === 'read') {
+      filtered = filtered.filter(n => n.read);
+    } else if (notificationFilter === 'unread') {
+      filtered = filtered.filter(n => !n.read);
+    }
+
+    // Filter by type
+    if (notificationTypeFilter !== 'all') {
+      filtered = filtered.filter(n => n.type === notificationTypeFilter);
+    }
+
+    // Filter by search
+    if (notificationSearch.trim()) {
+      const searchLower = notificationSearch.toLowerCase();
+      filtered = filtered.filter(n => 
+        n.title.toLowerCase().includes(searchLower) ||
+        n.message.toLowerCase().includes(searchLower)
+      );
+    }
+
+    return filtered;
+  };
+
+  const markNotificationAsRead = async (notificationId: string) => {
+    if (!currentUser) return;
+
+    try {
+      const notificationRef = doc(db, 'notifications', notificationId);
+      await updateDoc(notificationRef, { read: true });
+
+      // Update local state
+      setNotifications(prev => 
+        prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
+      );
+      setAllNotifications(prev => 
+        prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
+      );
+
+      // Log activity
+      recordActivityLog({
+        action: "Marked Notification as Read",
+        details: "User marked a notification as read",
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "low",
+        metadata: {
+          notificationId: notificationId,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+    }
+  };
+
+  const markAllAsRead = async () => {
+    if (!currentUser) return;
+
+    try {
+      const unreadNotifications = allNotifications.filter(n => !n.read);
+      
+      const updatePromises = unreadNotifications.map(notification => {
+        const notificationRef = doc(db, 'notifications', notification.id);
+        return updateDoc(notificationRef, { read: true });
+      });
+
+      await Promise.all(updatePromises);
+
+      // Update local state
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setAllNotifications(prev => prev.map(n => ({ ...n, read: true })));
+
+      // Log activity
+      recordActivityLog({
+        action: "Marked All Notifications as Read",
+        details: `User marked ${unreadNotifications.length} notifications as read`,
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "low",
+        metadata: {
+          notificationCount: unreadNotifications.length,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+    }
+  };
+
+  const handleViewAllNotifications = () => {
+    setShowAllNotifications(true);
+
+    // Log activity
+    if (currentUser) {
+      recordActivityLog({
+        action: "Opened All Notifications View",
+        details: "User opened the complete notifications panel",
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "low",
+        metadata: {
+          totalNotifications: allNotifications.length,
+          unreadCount: allNotifications.filter(n => !n.read).length,
+          timestamp: new Date().toISOString()
+        }
+      });
     }
   };
 
@@ -153,6 +403,22 @@ export default function UserProfile() {
 
   const handleLogout = async () => {
     try {
+      if (currentUser) {
+        // Log logout activity
+        recordActivityLog({
+          action: "User Logged Out",
+          details: "User logged out from their account",
+          userId: currentUser.uid,
+          userEmail: currentUser.email || undefined,
+          category: "auth",
+          severity: "low",
+          metadata: {
+            logoutTime: new Date().toISOString(),
+            fromPage: "profile"
+          }
+        });
+      }
+
       await signOut(auth);
       window.location.href = '/';
     } catch (error) {
@@ -192,11 +458,28 @@ export default function UserProfile() {
       const imageUrl = URL.createObjectURL(file);
       setPreviewImage(imageUrl);
       setShowModal(true);
+
+      // Log file selection
+      if (currentUser) {
+        recordActivityLog({
+          action: "Selected Profile Picture",
+          details: "User selected a new profile picture for upload",
+          userId: currentUser.uid,
+          userEmail: currentUser.email || undefined,
+          category: "user",
+          severity: "low",
+          metadata: {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type
+          }
+        });
+      }
     }
   };
 
   const handleConfirmChange = async () => {
-    if (!selectedImage || !userDocId) return;
+    if (!selectedImage || !userDocId || !currentUser) return;
 
     try {
       const storage = getStorage();
@@ -217,12 +500,45 @@ export default function UserProfile() {
       setCanChangePicture(false);
       setDaysLeft(90);
 
+      // Log successful upload
+      recordActivityLog({
+        action: "Updated Profile Picture",
+        details: "User successfully updated their profile picture",
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "medium",
+        metadata: {
+          fileName: selectedImage.name,
+          fileSize: selectedImage.size,
+          storageUrl: downloadURL,
+          nextAllowedChange: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString()
+        }
+      });
+
       // Clean up and close modal
       handleCancelChange();
 
       alert('Profile picture updated successfully!');
     } catch (error) {
       console.error('Error uploading image:', error);
+      
+      // Log error
+      if (currentUser) {
+        recordActivityLog({
+          action: "Profile Picture Update Failed",
+          details: "Failed to update profile picture",
+          userId: currentUser.uid,
+          userEmail: currentUser.email || undefined,
+          category: "user",
+          severity: "high",
+          metadata: {
+            error: error instanceof Error ? error.message : 'Unknown error',
+            fileName: selectedImage.name
+          }
+        });
+      }
+
       alert('Failed to update profile picture. Please try again.');
     }
   };
@@ -239,6 +555,21 @@ export default function UserProfile() {
   const handleShowIdCard = () => {
     setShowIdCard(true);
     setGeneratedIdImage(null);
+
+    // Log ID card view
+    if (currentUser) {
+      recordActivityLog({
+        action: "Viewed ID Card",
+        details: "User opened their digital ID card",
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "low",
+        metadata: {
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
   };
 
   const handleCloseIdCard = () => {
@@ -312,7 +643,7 @@ export default function UserProfile() {
   };
   
   const downloadIdCardImage = () => {
-    if (!generatedIdImage || !userData) {
+    if (!generatedIdImage || !userData || !currentUser) {
       alert('Please wait for the ID card image to be generated first');
       return;
     }
@@ -326,6 +657,20 @@ export default function UserProfile() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+
+      // Log ID card download
+      recordActivityLog({
+        action: "Downloaded ID Card",
+        details: "User downloaded their digital ID card image",
+        userId: currentUser.uid,
+        userEmail: currentUser.email || undefined,
+        category: "user",
+        severity: "low",
+        metadata: {
+          fileName: `${sanitizedName}_SK_ID_Card.png`,
+          timestamp: new Date().toISOString()
+        }
+      });
       
     } catch (error) {
       console.error('Error downloading image:', error);
@@ -343,6 +688,10 @@ export default function UserProfile() {
         return '✅';
       case 'error':
         return '❌';
+      case 'system':
+        return '⚙️';
+      case 'admin':
+        return '👨‍💼';
       default:
         return '📝';
     }
@@ -367,6 +716,8 @@ export default function UserProfile() {
       return date.toLocaleDateString();
     }
   };
+
+  const filteredNotifications = getFilteredNotifications();
 
   return (
     <RequireAuth>
@@ -493,67 +844,218 @@ export default function UserProfile() {
                 </div>
               </div>
 
-                {/* Notifications Panel */}
-                <div className="bg-white rounded-lg shadow-lg">
+              {/* Notifications Panel */}
+              <div className="bg-white rounded-lg shadow-lg">
                 <div className="flex justify-between items-center bg-[#1167B1] text-white px-5 py-3 rounded-t-lg">
                   <h3 className="font-semibold text-lg">RECENT NOTIFICATIONS</h3>
                   <span className="bg-white text-[#1167B1] text-sm font-semibold px-2 py-1 rounded-full">
-                  {notifications.filter(n => !n.read).length}
+                    {notifications.filter(n => !n.read).length}
                   </span>
                 </div>
-                <div className="p-4 max-h-96 overflow-y-scroll">
+                <div className="p-4 max-h-96 overflow-y-auto">
                   {notifications.length > 0 ? (
-                  <div className="space-y-3">
-                    {notifications.map((notification) => (
-                    <div
-                      key={notification.id}
-                      className={`p-4 rounded-lg border-l-4 ${
-                      notification.read 
-                        ? 'bg-gray-300 border-gray-300' 
-                        : 'bg-blue-50 border-blue-500'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3">
-                      <span className="text-lg flex-shrink-0 mt-1">
-                        {getNotificationIcon(notification.type)}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                        <h4 className={`font-medium text-sm ${
-                          notification.read ? 'text-gray-700' : 'text-gray-900'
-                        }`}>
-                          {notification.title}
-                        </h4>
-                        <span className="text-xs text-gray-500 flex-shrink-0">
-                          {formatNotificationDate(notification.createdAt)}
-                        </span>
+                    <div className="space-y-3">
+                      {notifications.map((notification) => (
+                        <div
+                          key={notification.id}
+                          className={`p-4 rounded-lg border-l-4 cursor-pointer transition-colors ${
+                            notification.read 
+                              ? 'bg-gray-50 border-gray-300 hover:bg-gray-100' 
+                              : 'bg-blue-50 border-blue-500 hover:bg-blue-100'
+                          }`}
+                          onClick={() => !notification.read && markNotificationAsRead(notification.id)}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="text-lg flex-shrink-0 mt-1">
+                              {getNotificationIcon(notification.type)}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <h4 className={`font-medium text-sm ${
+                                  notification.read ? 'text-gray-700' : 'text-gray-900'
+                                }`}>
+                                  {notification.title}
+                                </h4>
+                                <span className="text-xs text-gray-500 flex-shrink-0">
+                                  {formatNotificationDate(notification.createdAt)}
+                                </span>
+                              </div>
+                              <p className={`text-sm mt-1 ${
+                                notification.read ? 'text-gray-600' : 'text-gray-800'
+                              }`}>
+                                {notification.message}
+                              </p>
+                              {!notification.read && (
+                                <div className="mt-2">
+                                  <span className="inline-block w-2 h-2 bg-blue-500 rounded-full"></span>
+                                  <span className="text-xs text-blue-600 ml-2">New</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <p className={`text-sm mt-1 ${
-                        notification.read ? 'text-gray-600' : 'text-gray-800'
-                        }`}>
-                        {notification.body}
-                        </p>
-                        {!notification.read && (
-                        <div className="mt-2">
-                          <span className="inline-block w-2 h-2 bg-blue-500 rounded-full"></span>
-                          <span className="text-xs text-blue-600 ml-2">New</span>
-                        </div>
-                        )}
-                      </div>
-                      </div>
+                      ))}
                     </div>
-                    ))}
-                  </div>
                   ) : (
-                  <div className="text-center py-8">
-                    <div className="text-gray-400 text-4xl mb-3">🔔</div>
-                    <p className="text-gray-500">No notifications yet</p>
-                  </div>
+                    <div className="text-center py-8">
+                      <div className="text-gray-400 text-4xl mb-3">🔔</div>
+                      <p className="text-gray-500">No notifications yet</p>
+                    </div>
                   )}
                 </div>
-                </div>
+                {allNotifications.length > 0 && (
+                  <div className="border-t px-5 py-3">
+                    <button 
+                      onClick={handleViewAllNotifications}
+                      className="text-[#1167B1] text-sm font-medium hover:underline"
+                    >
+                      View All Notifications ({allNotifications.length})
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+
+          {/* All Notifications Modal */}
+          {showAllNotifications && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+                <div className="flex justify-between items-center p-6 border-b border-gray-200 bg-[#1167B1] text-white">
+                  <h2 className="text-2xl font-bold">All Notifications</h2>
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm bg-white text-[#1167B1] px-2 py-1 rounded-full font-semibold">
+                      {allNotifications.filter(n => !n.read).length} unread
+                    </span>
+                    <button
+                      onClick={() => setShowAllNotifications(false)}
+                      className="text-white hover:text-gray-200 text-2xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-white hover:bg-opacity-20 transition-colors"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filters */}
+                <div className="p-4 border-b bg-gray-50">
+                  <div className="flex flex-wrap gap-4 items-center">
+                    {/* Search */}
+                    <div className="flex-1 min-w-[200px]">
+                      <input
+                        type="text"
+                        placeholder="Search notifications..."
+                        value={notificationSearch}
+                        onChange={(e) => setNotificationSearch(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#1167B1]"
+                      />
+                    </div>
+
+                    {/* Read Status Filter */}
+                    <select
+                      value={notificationFilter}
+                      onChange={(e) => setNotificationFilter(e.target.value as 'all' | 'unread' | 'read')}
+                      className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#1167B1]"
+                    >
+                      <option value="all">All ({allNotifications.length})</option>
+                      <option value="unread">Unread ({allNotifications.filter(n => !n.read).length})</option>
+                      <option value="read">Read ({allNotifications.filter(n => n.read).length})</option>
+                    </select>
+
+                    {/* Type Filter */}
+                    <select
+                      value={notificationTypeFilter}
+                      onChange={(e) => setNotificationTypeFilter(e.target.value as 'all' | 'announcement' | 'system' | 'admin')}
+                      className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#1167B1]"
+                    >
+                      <option value="all">All Types</option>
+                      <option value="announcement">📢 Announcements</option>
+                      <option value="system">⚙️ System</option>
+                      <option value="admin">👨‍💼 Admin</option>
+                    </select>
+
+                    {/* Mark All as Read */}
+                    {allNotifications.some(n => !n.read) && (
+                      <button
+                        onClick={markAllAsRead}
+                        className="px-4 py-2 bg-[#1167B1] text-white rounded-md text-sm hover:bg-[#0d4c8b] transition-colors"
+                      >
+                        Mark All Read
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Notifications List */}
+                <div className="p-4 max-h-[60vh] overflow-y-auto">
+                  {filteredNotifications.length > 0 ? (
+                    <div className="space-y-3">
+                      {filteredNotifications.map((notification) => (
+                        <div
+                          key={notification.id}
+                          className={`p-4 rounded-lg border-l-4 cursor-pointer transition-colors ${
+                            notification.read 
+                              ? 'bg-gray-50 border-gray-300 hover:bg-gray-100' 
+                              : 'bg-blue-50 border-blue-500 hover:bg-blue-100'
+                          }`}
+                          onClick={() => !notification.read && markNotificationAsRead(notification.id)}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="text-lg flex-shrink-0 mt-1">
+                              {getNotificationIcon(notification.type)}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <h4 className={`font-medium text-sm ${
+                                  notification.read ? 'text-gray-700' : 'text-gray-900'
+                                }`}>
+                                  {notification.title}
+                                </h4>
+                                <span className="text-xs text-gray-500 flex-shrink-0">
+                                  {formatNotificationDate(notification.createdAt)}
+                                </span>
+                              </div>
+                              <p className={`text-sm mt-1 ${
+                                notification.read ? 'text-gray-600' : 'text-gray-800'
+                              }`}>
+                                {notification.message}
+                              </p>
+                              {notification.chatGroup && (
+                                <p className="text-xs text-gray-500 mt-1">
+                                  From: {notification.chatGroup}
+                                </p>
+                              )}
+                              {!notification.read && (
+                                <div className="mt-2 flex items-center">
+                                  <span className="inline-block w-2 h-2 bg-blue-500 rounded-full"></span>
+                                  <span className="text-xs text-blue-600 ml-2">New</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12">
+                      <div className="text-gray-400 text-6xl mb-4">🔍</div>
+                      <h3 className="text-lg font-medium text-gray-700 mb-2">No notifications found</h3>
+                      <p className="text-gray-500">
+                        {notificationSearch || notificationFilter !== 'all' || notificationTypeFilter !== 'all'
+                          ? 'Try adjusting your filters'
+                          : 'You have no notifications yet'
+                        }
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="border-t p-4 bg-gray-50 text-center text-sm text-gray-600">
+                  Showing {filteredNotifications.length} of {allNotifications.length} notifications
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Profile Picture Modal */}
           {showModal && (

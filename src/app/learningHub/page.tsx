@@ -23,7 +23,7 @@ const GEMINI_API_KEY =
 async function fetchGemini(prompt: string): Promise<string> {
     try {
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
             {
                 method: "POST",
                 headers: {
@@ -35,7 +35,7 @@ async function fetchGemini(prompt: string): Promise<string> {
                         temperature: 0.7,
                         topK: 40,
                         topP: 0.95,
-                        maxOutputTokens: 2048,
+                        maxOutputTokens: 4096,
                     },
                 }),
             }
@@ -128,7 +128,6 @@ function convertTimestamp(timestamp: any): Date | null {
     }
 }
 
-// Helper function to convert canvas to blob
 const canvasToBlob = (canvas: HTMLCanvasElement, quality: number = 0.8): Promise<Blob> => {
     return new Promise((resolve, reject) => {
         canvas.toBlob((blob) => {
@@ -141,7 +140,6 @@ const canvasToBlob = (canvas: HTMLCanvasElement, quality: number = 0.8): Promise
     });
 };
 
-// Generate PNG slides
 const generateSlideImages = async (
     title: string,
     slides: Slide[],
@@ -158,7 +156,6 @@ const generateSlideImages = async (
         
         const slideBlobs: Blob[] = [];
         
-        // Helper function to wrap text
         const wrapText = (context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] => {
             const words = text.split(' ');
             const lines: string[] = [];
@@ -180,17 +177,13 @@ const generateSlideImages = async (
             return lines;
         };
         
-        // Helper function to draw a slide
         const drawSlide = (slideData: any, isTitle: boolean = false, isObjectives: boolean = false) => {
-            // Clear canvas with white background
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             
-            // Header
             ctx.fillStyle = '#1e3a8a';
             ctx.fillRect(0, 0, canvas.width, canvas.height * 0.12);
             
-            // Footer - Philippine flag colors
             const footerHeight = canvas.height * 0.08;
             const footerY = canvas.height - footerHeight;
             ctx.fillStyle = '#1e3a8a';
@@ -270,19 +263,16 @@ const generateSlideImages = async (
             }
         };
         
-        // Generate title slide
         drawSlide({ title, description }, true);
         const titleBlob = await canvasToBlob(canvas);
         slideBlobs.push(titleBlob);
         
-        // Generate objectives slide if objectives exist
         if (objectives && objectives.filter(obj => obj.trim()).length > 0) {
             drawSlide({ objectives: objectives.filter(obj => obj.trim()) }, false, true);
             const objectivesBlob = await canvasToBlob(canvas);
             slideBlobs.push(objectivesBlob);
         }
         
-        // Generate content slides
         for (const slide of slides) {
             const cleanContent = slide.content
                 .replace(/\*/g, "")
@@ -306,7 +296,6 @@ const generateSlideImages = async (
     }
 };
 
-// Upload slide images to Firebase Storage and return URLs
 const uploadSlidesToFirebase = async (
     slideBlobs: Blob[],
     materialId: string,
@@ -339,10 +328,7 @@ const uploadSlidesToFirebase = async (
             const fileName = `${cleanTitle}_slide_${String(i + 1).padStart(2, '0')}_${timestamp}.png`;
             const storageRef = ref(storage, `${storageFolder}/${fileName}`);
             
-            // Upload the blob to Firebase Storage
             await uploadBytes(storageRef, slideBlobs[i]);
-            
-            // Get the download URL
             const downloadURL = await getDownloadURL(storageRef);
             
             slideImages.push({
@@ -362,7 +348,6 @@ const uploadSlidesToFirebase = async (
     }
 };
 
-// Delete slides from Firebase Storage
 const deleteSlidesFromFirebase = async (slideImages: SlideImage[]): Promise<void> => {
     try {
         for (const slideImage of slideImages) {
@@ -477,85 +462,65 @@ export default function LearningHub() {
         }
     };
 
-    const randomizeAnswers = (questions: Question[]): Question[] => {
-        const answerChoices = ["A", "B", "C", "D"];
-        return questions.map((q) => {
-            const randomIndex = Math.floor(Math.random() * answerChoices.length);
-            const newAnswer = answerChoices[randomIndex];
-            const correctOption =
-                q.options.find((opt) =>
-                    opt.startsWith(q.correctAnswer || q.answer)
-                ) || q.options[0];
-            const otherOptions = q.options.filter(
-                (opt) => !opt.startsWith(q.correctAnswer || q.answer)
-            );
-            const newOptions = [...q.options];
-            const correctText = correctOption.substring(3);
-            newOptions[randomIndex] = `${newAnswer}) ${correctText}`;
-            let optionIndex = 0;
-            for (let i = 0; i < 4; i++) {
-                if (i !== randomIndex) {
-                    if (otherOptions[optionIndex]) {
-                        const otherText = otherOptions[optionIndex].substring(3);
-                        newOptions[i] = `${answerChoices[i]}) ${otherText}`;
-                        optionIndex++;
-                    }
-                }
-            }
-            return {
-                ...q,
-                options: newOptions,
-                answer: newAnswer,
-                correctAnswer: newAnswer,
-            };
-        });
-    };
-
     const parseQuestions = (text: string): Question[] => {
         try {
-            const questionBlocks = text
+            const cleanedText = text
+                .replace(/Here are \d+ multiple-choice questions.*?:/gi, '')
+                .replace(/Based on the.*?content:/gi, '')
+                .trim();
+            
+            const questionBlocks = cleanedText
                 .split(/(?=\d+[\.\)]\s*)/g)
                 .filter((block) => block.trim().length > 0);
+            
             const parsedQuestions = questionBlocks.slice(0, 10).map((block, idx) => {
-                const lines = block
-                    .trim()
+                const lines = block.trim()
                     .split("\n")
                     .map((line) => line.trim())
                     .filter((line) => line.length > 0);
-                const question =
-                    lines[0]?.replace(/^\d+[\.\)]\s*/, "") || `Question ${idx + 1}`;
-                const options = lines
-                    .filter((line) => /^[A-D][\.\)]\s*/.test(line))
-                    .map((option) => option.trim());
-                if (options.length === 0) {
-                    return {
-                        id: idx + 1,
-                        question,
-                        options: [
-                            "A) Option A",
-                            "B) Option B",
-                            "C) Option C",
-                            "D) Option D",
-                        ],
-                        answer: "A",
-                        correctAnswer: "A",
-                    };
+
+                const question = lines[0]?.replace(/^(\d+[\.|\)])\s*/, "") || `Question ${idx + 1}`;
+
+                const rawOptions = lines.filter((line) => /^[A-D][\.|\)]\s*/.test(line));
+                const cleanedOptions = rawOptions.slice(0, 4).map((opt) => opt.replace(/^[A-D][\.|\)]\s*/, "").trim());
+
+                let answer = "";
+                let correctAnswer = "";
+                
+                const answerLine = lines.find((line) => /Answer\s*:/i.test(line));
+                if (answerLine) {
+                    const answerText = answerLine.replace(/Answer\s*:/i, '').trim();
+                    const letterMatch = answerText.match(/^([A-D])[\.|\)]\s*/i);
+                    
+                    if (letterMatch) {
+                        answer = letterMatch[1].toUpperCase();
+                        correctAnswer = answerText.replace(/^[A-D][\.|\)]\s*/i, '').trim();
+                    } else {
+                        correctAnswer = answerText;
+                        const foundIndex = cleanedOptions.findIndex(opt => 
+                            opt.toLowerCase().includes(answerText.toLowerCase()) ||
+                            answerText.toLowerCase().includes(opt.toLowerCase())
+                        );
+                        if (foundIndex !== -1) {
+                            answer = ['A', 'B', 'C', 'D'][foundIndex];
+                        }
+                    }
                 }
-                const answerLine = lines.find((line) =>
-                    /answer\s*:?\s*[A-D]/i.test(line)
-                );
-                const answer = answerLine
-                    ? answerLine.match(/[A-D]/)?.[0] || "A"
-                    : "A";
+
+                if (cleanedOptions.length < 4) {
+                    return null;
+                }
+
                 return {
                     id: idx + 1,
                     question,
-                    options: options.slice(0, 4),
+                    options: cleanedOptions,
                     answer,
-                    correctAnswer: answer,
+                    correctAnswer
                 };
-            });
-            return randomizeAnswers(parsedQuestions);
+            }).filter((q): q is Question => q !== null);
+            
+            return parsedQuestions;
         } catch (error) {
             console.error("Error parsing questions:", error);
             return [];
@@ -614,22 +579,29 @@ export default function LearningHub() {
         setLoading(true);
         setError("");
         try {
-            const qPrompt = `Based on the following content, create exactly 10 multiple-choice questions with varied correct answers (not all A). Format each question as follows:
+            const qPrompt = `Create exactly 10 (ten) multiple-choice questions based on the following content. 
 
+IMPORTANT FORMATTING RULES:
+- Do NOT include any introductory text like "Here are 10 questions..." or "Based on the content..."
+- Start directly with question 1 and end with question 10
+- Format each question EXACTLY as shown below with no extra text
+
+Format for each question:
 1. [Question text]
 A) [Option A]
-B) [Option B] 
+B) [Option B]
 C) [Option C]
 D) [Option D]
-Answer: [A/B/C/D - make sure to vary the correct answers]
+Answer: [Write the ANSWER FROM GENRATED OPTIONS]
 
-Content: ${content}
+Requirements:
+- Distribute correct answers across A, B, C, and D (don't make all answers the same letter)
+- Make options challenging and plausible
+- Test understanding of key concepts
+- Cover different aspects of the content
+- For the Answer field, write the COMPLETE answer text as a full statement, DO NOT just write A, B, C, or D
 
-Make sure:
-- Each question tests understanding of key concepts
-- Correct answers should be distributed across A, B, C, D options
-- Options should be plausible and challenging
-- Questions should cover different aspects of the content`;
+Content: ${content}`;
 
             const pptPrompt = `Convert the following content into exactly 10 presentation slides with concise, focused content (maximum 2-3 sentences per slide). Format each slide as follows:
 
@@ -650,6 +622,22 @@ Requirements:
             const qText = await fetchGemini(qPrompt);
             const pptText = await fetchGemini(pptPrompt);
             const parsedQuestions = parseQuestions(qText);
+
+            // Ensure the number of questions is between 10 and 12
+            if (parsedQuestions.length > 10) {
+                parsedQuestions.splice(10);
+            } else if (parsedQuestions.length < 10) {
+                const fallbackOptions = parsedQuestions.length > 0 ? [...parsedQuestions[0].options] : ["Option A", "Option B", "Option C", "Option D"];
+                while (parsedQuestions.length < 10) {
+                    parsedQuestions.push({
+                        id: parsedQuestions.length + 1,
+                        question: ` What is the main idea of "${title}"?`,
+                        options: fallbackOptions,
+                        answer: fallbackOptions[0],
+                        correctAnswer: fallbackOptions[0]
+                    });
+                }
+            }
             const parsedSlides = parseSlides(pptText);
             setQuestions(parsedQuestions);
             setSlideData(parsedSlides);
@@ -673,7 +661,6 @@ Requirements:
         setError("");
         
         try {
-            // First save the document to get the ID
             const docRef = await addDoc(collection(db, "learning_hub"), {
                 title,
                 description,
@@ -686,7 +673,6 @@ Requirements:
 
             const materialId = docRef.id;
             
-            // Generate and upload slides
             const slideBlobs = await generateSlideImages(
                 title,
                 slideData,
@@ -702,7 +688,6 @@ Requirements:
                 objectives && objectives.length > 0
             );
             
-            // Update the document with presentation data
             const presentationData: PresentationData = {
                 slides: slideData,
                 slideImages: slideImages,
@@ -715,7 +700,6 @@ Requirements:
                 presentationData: presentationData,
             });
             
-            // Update local state
             setMaterials((prev) => [
                 ...prev,
                 {
@@ -731,7 +715,6 @@ Requirements:
                 },
             ]);
             
-            // Reset form
             setPreviewModal(false);
             setTitle("");
             setContent("");
@@ -796,7 +779,7 @@ Requirements:
 
     return (
         <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto">
-            {error && (
+            {error ? (
                 <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
                     {error}
                     <button
@@ -806,7 +789,7 @@ Requirements:
                         ×
                     </button>
                 </div>
-            )}
+            ) : null}
             <div className="mb-6 flex justify-between items-center">
                 <div>
                     <h1 className="text-3xl font-semibold text-gray-800">Learning Hub</h1>
@@ -836,52 +819,52 @@ Requirements:
                     <div className="text-center py-12 text-gray-500">
                         <p>{showArchived ? "No archived materials." : "No learning materials yet. Create your first one!"}</p>
                     </div>
-                ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {(showArchived ? archivedMaterials : materials).map((m) => (
-                            <div
-                                key={m.id}
-                                className="bg-blue-100 p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer"
-                                onClick={() => handleViewMaterial(m)}
-                            >
-                                <h2 className="font-bold text-lg text-gray-800 mb-2">{m.title}</h2>
-                                {m.description && (
-                                    <p className="text-sm text-gray-600 mb-3 line-clamp-2">{m.description}</p>
+                ) : null}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {(showArchived ? archivedMaterials : materials).map((m) => {
+                        return (
+                        <div
+                            key={m.id}
+                            className="bg-blue-100 p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+                            onClick={() => handleViewMaterial(m)}
+                        >
+                            <h2 className="font-bold text-lg text-gray-800 mb-2">{m.title}</h2>
+                            {m.description && (
+                                <p className="text-sm text-gray-600 mb-3 line-clamp-2">{m.description}</p>
+                            )}
+                            <div className="text-sm text-gray-600">
+                                <p>Questions: {m.questions?.length || 0}</p>
+                                <p>Content Slides: {m.slideData?.length || 0}</p>
+                                <p>Objectives: {m.objectives?.length || 0}</p>
+                                {m.presentationData && m.presentationData.slideImages.length > 0 && (
+                                    <p>PNG Images: {m.presentationData.slideImages.length} slides</p>
                                 )}
-                                <div className="text-sm text-gray-600">
-                                    <p>Questions: {m.questions?.length || 0}</p>
-                                    <p>Content Slides: {m.slideData?.length || 0}</p>
-                                    <p>Objectives: {m.objectives?.length || 0}</p>
-                                    {m.presentationData && m.presentationData.slideImages.length > 0 && (
-                                        <p>PNG Images: {m.presentationData.slideImages.length} slides</p>
-                                    )}
-                                </div>
-                                <div className="mt-4">
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleArchive(m, !showArchived);
-                                        }}
-                                        disabled={archiveLoading === m.id}
-                                        className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
-                                            showArchived 
-                                                ? "bg-green-500 text-white hover:bg-green-600" 
-                                                : "bg-red-500 text-white hover:bg-red-600"
-                                        } disabled:opacity-50`}
-                                    >
-                                        {archiveLoading === m.id 
-                                            ? (showArchived ? "Unarchiving..." : "Archiving...") 
-                                            : (showArchived ? "Unarchive" : "Archive")
-                                        }
-                                    </button>
-                                </div>
                             </div>
-                        ))}
-                    </div>
-                )}
+                            <div className="mt-4">
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleArchive(m, !showArchived);
+                                    }}
+                                    disabled={archiveLoading === m.id}
+                                    className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
+                                        showArchived 
+                                            ? "bg-green-500 text-white hover:bg-green-600" 
+                                            : "bg-red-500 text-white hover:bg-red-600"
+                                    } disabled:opacity-50`}
+                                >
+                                    {archiveLoading === m.id 
+                                        ? (showArchived ? "Unarchiving..." : "Archiving...") 
+                                        : (showArchived ? "Unarchive" : "Archive")
+                                    }
+                                </button>
+                            </div>
+                        </div>
+                        );
+                    })}
+                </div>
             </div>
 
-            {/* Create Learning Material Modal */}
             {showModal && (
                 <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[600px] max-h-[90vh] overflow-y-auto">
@@ -970,9 +953,8 @@ Requirements:
                 </div>
             )}
 
-            {/* Preview Modal */}
             {previewModal && (
-                <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[800px] max-h-[90vh] overflow-y-auto">
                         <h2 className="text-xl font-bold mb-4">Preview Generated Content</h2>
                         
@@ -999,18 +981,15 @@ Requirements:
                                                 />
                                             </div>
                                         ))}
-                                        <div className="text-sm font-medium text-green-600">
-                                            Correct Answer: 
-                                            <select
+                                        <div className="text-sm font-medium text-green-600 mt-2">
+                                            <label className="block mb-1">Correct Answer:</label>
+                                            <input
+                                                type="text"
                                                 value={q.correctAnswer}
                                                 onChange={(e) => updateQuestion(idx, 'correctAnswer', e.target.value)}
-                                                className="ml-2 border rounded p-1"
-                                            >
-                                                <option value="A">A</option>
-                                                <option value="B">B</option>
-                                                <option value="C">C</option>
-                                                <option value="D">D</option>
-                                            </select>
+                                                className="w-full border rounded p-1"
+                                                placeholder="Enter the correct answer text"
+                                            />
                                         </div>
                                     </div>
                                 ))}
@@ -1065,9 +1044,8 @@ Requirements:
                 </div>
             )}
 
-            {/* View Material Modal */}
             {viewModal && selectedMaterial && (
-                <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[800px] max-h-[90vh] overflow-y-auto">
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-xl font-bold">{selectedMaterial.title}</h2>
@@ -1132,10 +1110,13 @@ Requirements:
                                     <div key={idx} className="text-sm p-2 bg-gray-50 rounded">
                                         <div className="font-medium mb-1">{q.question}</div>
                                         {q.options.map((opt, optIdx) => (
-                                            <div key={optIdx} className={opt.startsWith(q.correctAnswer) ? "text-green-600 font-medium" : ""}>
-                                                {opt}
+                                            <div key={optIdx} className={opt === q.correctAnswer ? "text-green-600 font-medium" : ""}>
+                                                {String.fromCharCode(65 + optIdx)}) {opt}
                                             </div>
                                         ))}
+                                        <div className="mt-1 text-green-600 font-medium">
+                                            Correct Answer: {q.correctAnswer}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
