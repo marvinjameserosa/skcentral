@@ -39,6 +39,7 @@ interface PodcastRoom {
   time?: string;
   userUID?: string;
   tags?: string[];
+  scheduledTime?: number;
 }
 
 interface PodcastParticipant {
@@ -71,6 +72,15 @@ const LivePodcast = () => {
     sortOrder: 'desc'
   });
   const [, setCategories] = useState<string[]>([]);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
+
+  // Update current time every second to check scheduled times
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const generateWebRTCRoomId = useCallback(() => {
     const timestamp = Date.now().toString(36);
@@ -133,6 +143,80 @@ const LivePodcast = () => {
     return fallback || Date.now();
   }, []);
 
+  const isPodcastJoinable = useCallback((room: PodcastRoom) => {
+    // If status is ended, it's not joinable
+    if (room.status === 'ended') {
+      return { joinable: false, reason: 'Podcast has ended' };
+    }
+
+    // If there's a scheduled time, check if it has arrived
+    if (room.date && room.time) {
+      const scheduledTime = parseDateTime(room.date, room.time);
+      if (currentTime < scheduledTime) {
+        const timeUntil = scheduledTime - currentTime;
+        const minutesUntil = Math.floor(timeUntil / 60000);
+        const hoursUntil = Math.floor(minutesUntil / 60);
+        const daysUntil = Math.floor(hoursUntil / 24);
+        
+        let timeString = '';
+        if (daysUntil > 0) {
+          timeString = `${daysUntil} day${daysUntil > 1 ? 's' : ''}`;
+        } else if (hoursUntil > 0) {
+          timeString = `${hoursUntil} hour${hoursUntil > 1 ? 's' : ''}`;
+        } else {
+          timeString = `${minutesUntil} minute${minutesUntil > 1 ? 's' : ''}`;
+        }
+        
+        return { 
+          joinable: false, 
+          reason: `Starts in ${timeString}`,
+          scheduledTime: scheduledTime
+        };
+      }
+    }
+
+    // Check if room is full
+    if (room.participantCount >= (room.maxParticipants || 50)) {
+      return { joinable: false, reason: 'Room is full' };
+    }
+
+    return { joinable: true, reason: '' };
+  }, [currentTime, parseDateTime]);
+
+  const formatScheduledTime = useCallback((dateStr?: string, timeStr?: string) => {
+    if (!dateStr || !timeStr) return '';
+    
+    try {
+      const scheduledDate = new Date(`${dateStr} ${timeStr}`);
+      if (isNaN(scheduledDate.getTime())) return '';
+      
+      const now = new Date();
+      const isToday = scheduledDate.toDateString() === now.toDateString();
+      const isTomorrow = new Date(now.getTime() + 86400000).toDateString() === scheduledDate.toDateString();
+      
+      const timeFormatted = scheduledDate.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+      
+      if (isToday) {
+        return `Today at ${timeFormatted}`;
+      } else if (isTomorrow) {
+        return `Tomorrow at ${timeFormatted}`;
+      } else {
+        const dateFormatted = scheduledDate.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: scheduledDate.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+        });
+        return `${dateFormatted} at ${timeFormatted}`;
+      }
+    } catch {
+      return '';
+    }
+  }, []);
+
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
 
@@ -142,7 +226,7 @@ const LivePodcast = () => {
         await testFirestoreConnection();
         setDebugInfo('Building query for approved podcasts...');
 
-        // Updated query to fetch podcasts with approved status OR approved field set to true
+        // Query for approved podcasts that are NOT ended
         const podcastsQuery = query(
           collection(db, "podcasts"),
           where("approved", "==", true)
@@ -185,11 +269,12 @@ const LivePodcast = () => {
                     approved = false
                   } = roomData;
 
-                  // Only include if approved is true
-                  if (!approved) return;
+                  // Only include if approved is true AND status is NOT 'ended'
+                  if (!approved || status === 'ended') return;
 
                   const finalHostName = hostName || speaker || "Unknown Host";
                   const finalCreatedAt = parseDateTime(date, time, createdAt);
+                  const scheduledTime = date && time ? parseDateTime(date, time) : undefined;
 
                   let finalWebRTCRoomId = webrtcRoomId;
                   if (!finalWebRTCRoomId) {
@@ -245,7 +330,8 @@ const LivePodcast = () => {
                     date,
                     time,
                     userUID,
-                    tags
+                    tags,
+                    scheduledTime
                   };
 
                   rooms.push(room);
@@ -256,11 +342,11 @@ const LivePodcast = () => {
 
               await Promise.all(processPromises);
 
-              // Filter out ended podcasts
+              // Filter out ended podcasts (redundant check but ensures no ended podcasts show)
               const activeRooms = rooms.filter(room => room.status !== 'ended');
 
               activeRooms.sort((a, b) => {
-                const statusPriority = { live: 3, waiting: 2, approved: 2, ended: 1 };
+                const statusPriority = { live: 3, waiting: 2, approved: 2, ended: 0 };
                 const aPriority = statusPriority[a.status] || 0;
                 const bPriority = statusPriority[b.status] || 0;
                 if (aPriority !== bPriority) {
@@ -272,7 +358,7 @@ const LivePodcast = () => {
               setPodcastRooms(activeRooms);
               setCategories(['General', ...Array.from(foundCategories).sort()]);
               setError(null);
-              setDebugInfo(`Successfully loaded ${rooms.length} podcasts`);
+              setDebugInfo(`Successfully loaded ${activeRooms.length} active podcasts`);
             } catch (processError) {
               const errorMsg = getErrorMessage(processError);
               setError(`Failed to process podcast data: ${errorMsg}`);
@@ -306,6 +392,9 @@ const LivePodcast = () => {
 
   const filteredAndSortedRooms = useMemo(() => {
     const filtered = podcastRooms.filter(room => {
+      // Always filter out ended podcasts
+      if (room.status === 'ended') return false;
+
       const searchLower = searchTerm.toLowerCase();
       const matchesSearch = !searchTerm || 
         room.title.toLowerCase().includes(searchLower) ||
@@ -351,7 +440,7 @@ const LivePodcast = () => {
     role: "host" | "listener" = "listener"
   ) => {
     try {
-      // Check if podcast is approved before joining
+      // Check if podcast is approved and not ended before joining
       const roomDoc = await new Promise<DocumentData | undefined>((resolve, reject) => {
         const unsubscribe = onSnapshot(
           doc(db, "podcasts", roomId),
@@ -372,6 +461,19 @@ const LivePodcast = () => {
 
       if (!roomDoc || !roomDoc.approved) {
         throw new Error(`Podcast not approved: "${roomId}"`);
+      }
+
+      if (roomDoc.status === 'ended') {
+        throw new Error('This podcast has ended and is no longer available');
+      }
+
+      // Check if scheduled time has arrived
+      if (roomDoc.date && roomDoc.time) {
+        const scheduledTime = parseDateTime(roomDoc.date, roomDoc.time);
+        if (Date.now() < scheduledTime) {
+          const timeFormatted = formatScheduledTime(roomDoc.date, roomDoc.time);
+          throw new Error(`This podcast is scheduled for ${timeFormatted}. Please wait until then to join.`);
+        }
       }
 
       const participantRef = doc(db, `podcasts/${roomId}/participants`, userId);
@@ -396,6 +498,13 @@ const LivePodcast = () => {
 
   const handleJoinPodcast = async (room: PodcastRoom) => {
     try {
+      const joinability = isPodcastJoinable(room);
+      
+      if (!joinability.joinable) {
+        alert(joinability.reason);
+        return;
+      }
+
       setDebugInfo(`Joining podcast: ${room.title}...`);
       const userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const userName = 'Podcast Listener';
@@ -578,6 +687,9 @@ const LivePodcast = () => {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filteredRooms.map((room) => {
           const statusStyling = getStatusStyling(room.status);
+          const joinability = isPodcastJoinable(room);
+          const scheduledTimeStr = formatScheduledTime(room.date, room.time);
+          
           return (
             <div
             key={room.id}
@@ -607,6 +719,13 @@ const LivePodcast = () => {
               <span className="font-medium truncate">{room.hostName}</span>
               </div>
               
+              {scheduledTimeStr && (
+                <div className="flex items-center text-gray-600">
+                <span className="mr-3 text-lg">📅</span>
+                <span className="font-medium text-xs">{scheduledTimeStr}</span>
+                </div>
+              )}
+
               <div className="flex items-center text-gray-600">
               <span className="mr-3 text-lg">🏷️</span>
               <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono">
@@ -622,23 +741,29 @@ const LivePodcast = () => {
               </div>
             </div>
 
+            {!joinability.joinable && joinability.reason && (
+              <div className="mb-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800 text-center">
+              ⏰ {joinability.reason}
+              </div>
+            )}
+
             <div className="flex flex-col gap-2">
               <button
               type="button"
               onClick={() => {
                 handleJoinPodcast(room);
               }}
-              disabled={room.participantCount >= (room.maxParticipants || 50)}
+              disabled={!joinability.joinable}
               className={`w-full py-3 px-4 rounded-lg transition-all duration-200 text-sm font-bold shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
-                room.participantCount >= (room.maxParticipants || 50)
+                !joinability.joinable
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 : 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white'
               }`}
               >
               <span className="mr-2">
-                {room.participantCount >= (room.maxParticipants || 50) ? '🚫' : '🎧'}
+                {!joinability.joinable ? '🚫' : '🎧'}
               </span>
-              {room.participantCount >= (room.maxParticipants || 50) ? 'Room Full' : 'Join as Listener'}
+              {!joinability.joinable ? 'Cannot Join' : 'Join as Listener'}
               </button>
 
               <button
@@ -646,6 +771,13 @@ const LivePodcast = () => {
               onClick={() => {
                 (async () => {
                 try {
+                  const hostJoinability = isPodcastJoinable(room);
+                  
+                  if (!hostJoinability.joinable) {
+                    alert(hostJoinability.reason);
+                    return;
+                  }
+
                   setDebugInfo(`Joining as Host: ${room.title}...`);
                   const userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
                   const userName = 'Podcast Host';
@@ -664,7 +796,12 @@ const LivePodcast = () => {
                 }
                 })();
               }}
-              className="w-full py-3 px-4 rounded-lg transition-all duration-200 text-sm font-bold shadow-md hover:shadow-lg transform hover:-translate-y-0.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white"
+              disabled={!joinability.joinable}
+              className={`w-full py-3 px-4 rounded-lg transition-all duration-200 text-sm font-bold shadow-md hover:shadow-lg transform hover:-translate-y-0.5 ${
+                !joinability.joinable
+                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white'
+              }`}
               >
               <span className="mr-2">👑</span>
               Join as Host

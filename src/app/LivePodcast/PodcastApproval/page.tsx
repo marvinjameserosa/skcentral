@@ -13,6 +13,7 @@ import {
   deleteDoc,
   updateDoc,
   setDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import Navbar from "../../Components/Navbar";
 
@@ -46,6 +47,13 @@ const PodcastApproval = () => {
     return `SKCMP-${random}-${dateString}`;
   };
 
+  // Generate Host ID
+  const generateHostId = (): string => {
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).substring(2, 9);
+    return `host_${timestamp}_${random}`;
+  };
+
   const fetchPendingPodcasts = async () => {
     try {
       const q = query(
@@ -64,7 +72,7 @@ const PodcastApproval = () => {
         });
       });
 
-      // Optional: sort by date & time, newest first
+      // Sort by date & time, newest first
       pending.sort((a, b) => {
         const aTime = new Date(`${a.date}T${a.time}`).getTime();
         const bTime = new Date(`${b.date}T${b.time}`).getTime();
@@ -95,21 +103,20 @@ const PodcastApproval = () => {
 
       const podcastData = podcastSnap.data();
 
-      // Generate a unique room ID for this approved podcast
+      // Generate unique IDs
       const roomId = generateRoomId();
+      const hostId = generateHostId();
+      const hostName = podcastData.speaker || "Unknown Host";
 
-      // Add to approved podcasts collection with room ID
-      await addDoc(collection(db, "podcasts"), {
-        ...podcastData,
-        status: "approved",
-        roomId: roomId,
-        approved: true,
-        approvedAt: new Date(),
-      });
+      console.log("Creating room with:", { roomId, hostId, hostName });
 
-      // Create or update a room record in "rooms" collection for easier management
+      // 1. Add to approved podcasts collection
+
+      // 2. Create room document in "rooms" collection
       await setDoc(doc(db, "rooms", roomId), {
         roomId: roomId,
+        hostId: hostId,
+        hostName: hostName,
         podcastId: podcastData.podcastId,
         title: podcastData.title,
         speaker: podcastData.speaker,
@@ -117,16 +124,37 @@ const PodcastApproval = () => {
         hostUID: podcastData.userUID,
         scheduledDate: podcastData.date,
         scheduledTime: podcastData.time,
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
         status: "scheduled",
-        participants: {},
-        webrtc: {},
+        isActive: true,
+        ended: false,
+        participantCount: 0,
+        maxParticipants: 50,
       });
 
-      // Remove from pending collection
+      // 3. Create host participant in room/participants subcollection
+      const hostParticipantRef = doc(db, `rooms/${roomId}/participants`, hostId);
+      await setDoc(hostParticipantRef, {
+        userId: hostId,
+        userName: hostName,
+        role: "host",
+        joinedAt: Date.now(),
+        isActive: false, // Will be set to true when host actually joins
+        canSpeak: true,
+      });
+
+      console.log("✅ Room created successfully:", roomId);
+
+      // 4. Remove from pending collection
       await deleteDoc(podcastRef);
 
-      alert(`Podcast approved successfully! Room ID: ${roomId}`);
+      alert(
+        `✅ Podcast approved successfully!\n\n` +
+        `Room ID: ${roomId}\n` +
+        `Host ID: ${hostId}\n` +
+        `Host Name: ${hostName}\n\n` +
+        `The host can now start their podcast.`
+      );
 
       fetchPendingPodcasts();
     } catch (error) {
@@ -137,10 +165,18 @@ const PodcastApproval = () => {
 
   const handleReject = async (docId: string) => {
     try {
+      const confirmed = window.confirm(
+        "Are you sure you want to reject this podcast request?"
+      );
+
+      if (!confirmed) return;
+
       await updateDoc(doc(db, "podcastRegistration", docId), {
         status: "rejected",
-        rejectedAt: new Date(),
+        rejectedAt: serverTimestamp(),
       });
+
+      alert("Podcast request rejected.");
       fetchPendingPodcasts();
     } catch (error) {
       console.error("Error rejecting podcast:", error);
@@ -212,12 +248,19 @@ const PodcastApproval = () => {
                         <span>Topic: {pod.topic}</span>
                       </div>
                     )}
+
+                    {pod.userUID && (
+                      <div className="mt-2 text-xs text-gray-500">
+                        <span className="mr-2">🔑</span>
+                        <span className="font-mono">User ID: {pod.userUID}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex space-x-3 ml-6">
                     <button
                       onClick={() => handleApprove(pod.id)}
-                      className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2"
+                      className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2 shadow-md hover:shadow-lg"
                     >
                       <span>✓</span>
                       <span>Approve</span>
@@ -225,7 +268,7 @@ const PodcastApproval = () => {
 
                     <button
                       onClick={() => handleReject(pod.id)}
-                      className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2"
+                      className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors duration-200 flex items-center space-x-2 shadow-md hover:shadow-lg"
                     >
                       <span>✗</span>
                       <span>Reject</span>
@@ -246,8 +289,8 @@ const PodcastApproval = () => {
             </p>
           </div>
         )}
-        <Navbar />
       </div>
+      <Navbar />
     </div>
   );
 };
