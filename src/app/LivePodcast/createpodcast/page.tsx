@@ -47,7 +47,7 @@ const PodcastForm = () => {
       setIsSubmitting(true);
 
       try {
-        await addDoc(collection(db, "podcasts"), {
+        await addDoc(collection(db, "podcastRegistration"), { // ✅ Updated collection name
           ...formData,
           createdAt: serverTimestamp(),
         });
@@ -73,7 +73,9 @@ const PodcastForm = () => {
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto">
       {/* Page Header */}
       <div className="mb-6">
-        <h1 className="text-3xl font-semibold text-gray-800">Podcast Submission</h1>
+        <h1 className="text-3xl font-semibold text-gray-800">
+          Podcast Submission
+        </h1>
         <p className="text-lg text-gray-600 mt-1">
           Propose your podcast session details.
         </p>
