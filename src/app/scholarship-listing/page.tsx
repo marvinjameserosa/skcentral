@@ -929,7 +929,7 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
 
         {/* Modal for Scholarship Details */}
         {modalScholarshipId && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#e7f0fa] rounded-xl w-full max-w-6xl max-h-[90vh] overflow-y-auto p-6 text-left shadow-xl border-2 border-[#0A2F7A] relative">
               <button
                 onClick={() => {

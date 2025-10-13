@@ -9,6 +9,7 @@ import { doc, setDoc, collection, addDoc, serverTimestamp } from 'firebase/fires
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { recordActivityLog } from '@/app/Components/recordActivityLog';
 import { getAuth, User } from 'firebase/auth';
+import Link from 'next/link';
 
 interface EventData {
   eventId: string;
@@ -214,6 +215,7 @@ export default function CommunityEventCreate() {
         time: string;
         createdBy: string;
         createdByEmail: string;
+        status: string;
       } = {
         ...formData,
         eventId: newEventId,
@@ -231,6 +233,7 @@ export default function CommunityEventCreate() {
         }).replace(',', ' at'),
         createdBy: authUser.uid,
         createdByEmail: authUser.email || 'unknown',
+        status: 'active',
       };
 
       // Add event to Firestore
@@ -342,18 +345,31 @@ export default function CommunityEventCreate() {
       <div className="ml-[260px] min-h-screen bg-[#e7f0fa] overflow-auto">
         <div className="p-6">
           {/* Page Header */}
-          <header className="mb-6">
-            <h1 className="text-3xl font-semibold text-gray-800">Create Community Event</h1>
-            <p className="text-lg text-gray-600 mt-1">
-              Fill out the form below to create a new community event.
-            </p>
-          </header>
+      <header className="mb-6">
+      <Link href="/community-event">
+        <div className="cursor-pointer flex flex-col">
+          <div className="flex items-center space-x-2">
+        <Image
+          src="/ArrowBackIcon.svg"
+          alt="Arrow Back"
+          width={24}
+          height={24}
+          style={{ fill: '#11459B' }}
+        />
+        <h1 className="text-3xl font-semibold text-gray-800">Create Community Event</h1>
+          </div>
+          <p className="text-lg text-gray-600 mt-2">
+        The hub that connects kabataan with events and activities led by the SK Federation.
+          </p>
+        </div>
+      </Link>
+      </header>
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="flex flex-wrap gap-6">
             {/* Event Details */}
             <div className="bg-white rounded-xl shadow-md p-6 flex-1 min-w-[400px] max-w-[800px]">
-              <h2 className="text-xl font-semibold text-gray-800 mb-4">Event Details</h2>
+              <h2 className="text-xl font-semibold text-gray-800 mb-2">Event Details</h2>
 
               <InputField
                 label="Title"
@@ -374,7 +390,7 @@ export default function CommunityEventCreate() {
                 placeholder="Write a brief description of the event..."
               />
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                 <InputField
                   label="Event Date"
                   name="date"
@@ -400,6 +416,7 @@ export default function CommunityEventCreate() {
                 value={formData.deadline}
                 onChange={handleInputChange}
                 error={errors.deadline}
+                max={formData.date || undefined}
               />
 
               <InputField
@@ -512,7 +529,6 @@ export default function CommunityEventCreate() {
         {showSuccess && (
           <Modal title="Event has been posted!" onConfirm={() => setShowSuccess(false)} />
         )}
-
         <Navbar />
       </div>
     </RequireAuth>
@@ -528,6 +544,7 @@ function InputField({
   onChange,
   error,
   placeholder,
+  max,
 }: {
   label: string;
   name: string;
@@ -536,6 +553,7 @@ function InputField({
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   error?: string;
   placeholder?: string;
+  max?: string;
 }) {
   return (
     <div className="mb-4">
@@ -548,6 +566,7 @@ function InputField({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
+        max={max}
         className={`w-full bg-[#D4EEFF] rounded-md p-2 text-sm outline-none shadow-sm ${
           error ? 'border-2 border-red-500' : ''
         }`}

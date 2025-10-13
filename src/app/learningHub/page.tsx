@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import React from "react";
 import { useState, useEffect } from "react";
 import Image from "next/image";
 import Navbar from "../Components/Navbar";
@@ -18,12 +19,12 @@ import { ref, getDownloadURL, uploadBytes, deleteObject } from "firebase/storage
 
 const GEMINI_API_KEY =
     process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
-    "AIzaSyCsQinH-fPPx1PL2KBYrEhCHUhJGblJncU";
+    "AIzaSyAp4lX7CpzQoypAsXvhri9_ck16iBth8GA";
 
 async function fetchGemini(prompt: string): Promise<string> {
     try {
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
             {
                 method: "POST",
                 headers: {
@@ -866,7 +867,7 @@ Requirements:
             </div>
 
             {showModal && (
-                <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 backdrop-blur z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[600px] max-h-[90vh] overflow-y-auto">
                         <h2 className="text-xl font-bold mb-4">Create Learning Material</h2>
                         <input
@@ -954,7 +955,7 @@ Requirements:
             )}
 
             {previewModal && (
-                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 z-50">
+                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 backdrop-blur z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[800px] max-h-[90vh] overflow-y-auto">
                         <h2 className="text-xl font-bold mb-4">Preview Generated Content</h2>
                         
@@ -1045,7 +1046,7 @@ Requirements:
             )}
 
             {viewModal && selectedMaterial && (
-                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 z-50">
+                <div className="fixed inset-0 flex items-center justify-center bg-opacity-40 backdrop-blur z-50">
                     <div className="bg-white p-6 rounded-xl shadow-lg w-[800px] max-h-[90vh] overflow-y-auto">
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-xl font-bold">{selectedMaterial.title}</h2>

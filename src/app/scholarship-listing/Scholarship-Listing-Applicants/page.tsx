@@ -1,44 +1,41 @@
+/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useState, useEffect, Suspense } from 'react';
 import { db } from "@/app/Firebase/firebase";
-import { collection, getDocs, query, where, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, query, where, updateDoc } from 'firebase/firestore';
 import Navbar from "../../Components/Navbar";
 import { useRouter } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
 import RequireAuth from "@/app/Components/RequireAuth";
-import { getAuth, User } from "firebase/auth";
-import { recordActivityLog } from "@/app/Components/recordActivityLog";
 
-// Email configuration
+// 📧 EMAIL CONFIGURATION - UPDATE THESE WITH YOUR GMAIL CREDENTIALS
 const EMAIL_CONFIG = {
-  GMAIL_USER: 'skcentralsystem@gmail.com',
-  GMAIL_APP_PASSWORD: 'awis lkif bgih hclg',
+  GMAIL_USER: 'skcentralsystem@gmail.com', // Replace with your actual Gmail
+  GMAIL_APP_PASSWORD: 'awis lkif bgih hclg', // Replace with your actual app password
 };
 
-interface EmailData {
-  to: string;
-  subject: string;
-  html: string;
-}
-
-// Email sending function
-const sendEmailDirectly = async (emailData: EmailData) => {
+// 📧 EMAIL SENDING FUNCTION
+const sendEmailDirectly = async (emailData: any) => {
   try {
+    // Validate email configuration
     if (!EMAIL_CONFIG.GMAIL_USER ||
         !EMAIL_CONFIG.GMAIL_APP_PASSWORD ||
         EMAIL_CONFIG.GMAIL_USER.trim() === '' ||
         EMAIL_CONFIG.GMAIL_APP_PASSWORD.trim() === '' ||
         !EMAIL_CONFIG.GMAIL_USER.includes('@') ||
         EMAIL_CONFIG.GMAIL_APP_PASSWORD.length < 16) {
-      throw new Error('Gmail credentials not configured properly in EMAIL_CONFIG.');
+      throw new Error('Gmail credentials not configured properly in EMAIL_CONFIG. Please check your email and app password.');
     }
 
     console.log('📧 Sending email notification to organization:');
     console.log('From:', EMAIL_CONFIG.GMAIL_USER);
     console.log('To:', emailData.to);
+    console.log('CC:', emailData.cc || 'None');
     console.log('Subject:', emailData.subject);
 
+    // Send email via API route
     const response = await fetch('/api/send-email', {
       method: 'POST',
       headers: {
@@ -47,18 +44,21 @@ const sendEmailDirectly = async (emailData: EmailData) => {
       body: JSON.stringify({
         from: EMAIL_CONFIG.GMAIL_USER,
         to: emailData.to,
+        cc: emailData.cc || [],
         subject: emailData.subject,
         html: emailData.html,
         gmailUser: EMAIL_CONFIG.GMAIL_USER,
         gmailPassword: EMAIL_CONFIG.GMAIL_APP_PASSWORD,
+        attachments: emailData.attachments || [],
       }),
     });
 
+    // Check if response is JSON
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       const htmlText = await response.text();
       console.error('❌ API returned HTML instead of JSON:', htmlText.substring(0, 200));
-      throw new Error('API route not found or returning HTML. Please ensure /api/send-email/route.ts exists.');
+      throw new Error('API route not found or returning HTML. Please ensure /api/send-email/route.ts exists and is properly configured.');
     }
 
     const result = await response.json();
@@ -68,6 +68,7 @@ const sendEmailDirectly = async (emailData: EmailData) => {
       if (result.details) {
         errorMessage += ` (${result.details})`;
       }
+      
       console.error('❌ API Error Response:', result);
       throw new Error(errorMessage);
     }
@@ -82,7 +83,7 @@ const sendEmailDirectly = async (emailData: EmailData) => {
 
   } catch (error) {
     console.error('❌ Email sending error:', error);
-    throw error;
+    throw error; // Re-throw to show proper error to user
   }
 };
 
@@ -91,29 +92,42 @@ interface Applicant {
   name: string;
   phone: string;
   email: string;
-  certificate: {
-    corFileName: string;
-    reportCardFileName: string;
-  };
+  certificateUrl: string;
+  certificateFileName: string;
   status: string;
 }
 
 interface Scholarship {
   id: string;
-  title?: string;
-  scholarshipName?: string;
-  companyEmail?: string;
-  providerEmail?: string;
-  [key: string]: unknown;
+  scholarshipName: string;
+  providerEmail: string;
+  [key: string]: any;
 }
 
-// Component that uses useSearchParams
+// Helper function to extract clean file name from URL
+const getFileNameFromUrl = (url: string): string => {
+  if (!url) return '';
+  try {
+    // Get the last segment after the last slash and before query parameters
+    const urlPath = url.split('?')[0];
+    const fileName = decodeURIComponent(urlPath.split('/').pop() || '');
+    
+    // Remove any Firebase storage prefixes if they exist
+    const cleanFileName = fileName.replace(/^.*%2F/, '');
+    
+    return cleanFileName || 'file.pdf';
+  } catch (error) {
+    console.error('Error extracting filename:', error);
+    return 'file.pdf';
+  }
+};
+
+// Inner component that uses useSearchParams
 function ScholarshipListingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [selectedScholarshipId, setSelectedScholarshipId] = useState<string>('');
   const [previewFile, setPreviewFile] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
 
   // Email modal state
   const [showEmailModal, setShowEmailModal] = useState(false);
@@ -121,6 +135,13 @@ function ScholarshipListingContent() {
   const [emailSubject, setEmailSubject] = useState('');
   const [emailMessage, setEmailMessage] = useState('');
   const [isEmailSending, setIsEmailSending] = useState(false);
+  
+  // Bulk actions state
+  const [isBulkNotifying, setIsBulkNotifying] = useState(false);
+  const [isBulkDownloading, setIsBulkDownloading] = useState(false);
+
+  // Auto status update mode
+  const [autoStatusUpdate, setAutoStatusUpdate] = useState(true);
 
   const [organizationEmail, setOrganizationEmail] = useState<string>('');
   const [scholarshipName, setScholarshipName] = useState<string>('');
@@ -128,45 +149,11 @@ function ScholarshipListingContent() {
   const [scholarships, setScholarships] = useState<Scholarship[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Initialize authentication
-  const auth = getAuth();
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-
-        // Log page access with specific page name
-        await recordActivityLog({
-          action: "View Page",
-          details: "User accessed the Scholarship Listing Applicants page",
-          userId: currentUser.uid,
-          userEmail: currentUser.email || undefined,
-          category: "user",
-        });
-      } else {
-        setUser(null);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [auth]);
-
-  // Send notification to all users
-  const sendNotificationToAllUsers = async (title: string, body: string, type: string = "scholarship") => {
-    try {
-      await addDoc(collection(db, "notifications"), {
-        userId: "all",
-        type,
-        title,
-        body,
-        createdAt: serverTimestamp(),
-        read: false,
-      });
-    } catch (error) {
-      console.error("Error sending notification:", error);
-    }
-  };
+  // Sorting state
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: string; }>({ 
+    key: '', 
+    direction: '' 
+  });
 
   // Email configuration validation
   const isEmailConfigured = EMAIL_CONFIG.GMAIL_USER && 
@@ -213,19 +200,9 @@ function ScholarshipListingContent() {
       const selected = scholarships.find((s) => s.id === scholarshipId);
       if (selected) {
         setSelectedScholarshipId(scholarshipId);
-        
-        // Try different field names for email and scholarship name
-        const email = selected.companyEmail || selected.providerEmail || '';
-        const name = selected.title || selected.scholarshipName || '';
-        
-        setOrganizationEmail(email);
-        setScholarshipName(name);
-        console.log('Selected scholarship:', {
-          id: scholarshipId,
-          email,
-          name,
-          fullData: selected
-        });
+        setOrganizationEmail(selected.providerEmail || '');
+        setScholarshipName(selected.scholarshipName || '');
+        console.log('Selected scholarship:', selected);
       }
     }
   }, [searchParams, scholarships]);
@@ -245,28 +222,13 @@ function ScholarshipListingContent() {
       try {
         const scholarshipApplicantsRef = collection(db, "scholarshipApplicants");
         
-        // Match by scholarshipName first
+        // Match by scholarshipName or scholarshipId
         let applicantsQuery = query(
           scholarshipApplicantsRef,
           where("scholarshipName", "==", scholarshipName)
         );
         let applicantsSnapshot = await getDocs(applicantsQuery);
 
-        // If no results, try matching by scholarship title
-        if (applicantsSnapshot.empty) {
-          const currentScholarship = scholarships.find(s => s.id === selectedScholarshipId);
-          const titleToMatch = currentScholarship?.title || currentScholarship?.scholarshipName || scholarshipName;
-          
-          if (titleToMatch && titleToMatch !== scholarshipName) {
-            applicantsQuery = query(
-              scholarshipApplicantsRef,
-              where("scholarshipName", "==", titleToMatch)
-            );
-            applicantsSnapshot = await getDocs(applicantsQuery);
-          }
-        }
-
-        // If still no results, try matching by scholarshipId
         if (applicantsSnapshot.empty) {
           applicantsQuery = query(
             scholarshipApplicantsRef,
@@ -276,7 +238,7 @@ function ScholarshipListingContent() {
         }
 
         if (applicantsSnapshot.empty) {
-          console.log("No applicants found for scholarship:", scholarshipName);
+          console.log("No applicants found");
           setApplicants([]);
           setLoading(false);
           return;
@@ -287,30 +249,11 @@ function ScholarshipListingContent() {
         const approvedUsersSnapshot = await getDocs(approvedUsersRef);
 
         // Map approved users by uid
-        interface ApprovedUser {
-          uid: string;
-          firstName?: string;
-          middleName?: string;
-          lastName?: string;
-          contact?: string;
-          phone?: string;
-          phoneNumber?: string;
-          email?: string;
-        }
-        const approvedUsersMap = new Map<string, ApprovedUser>();
+        const approvedUsersMap = new Map<string, any>();
         approvedUsersSnapshot.docs.forEach((doc) => {
           const userData = doc.data();
           if (userData.uid) {
-            approvedUsersMap.set(userData.uid, {
-              uid: userData.uid,
-              firstName: userData.firstName,
-              middleName: userData.middleName,
-              lastName: userData.lastName,
-              contact: userData.contact,
-              phone: userData.phone,
-              phoneNumber: userData.phoneNumber,
-              email: userData.email,
-            });
+            approvedUsersMap.set(userData.uid, userData);
           }
         });
 
@@ -319,6 +262,10 @@ function ScholarshipListingContent() {
           const applicantData = doc.data();
           const applicantUid = applicantData.uid || "";
           const userData = approvedUsersMap.get(applicantUid);
+
+          // Get certificate URL and extract clean file name
+          const certificateUrl = applicantData.corFileName || applicantData.certificateUrl || applicantData.reportCardFileName || "";
+          const certificateFileName = getFileNameFromUrl(certificateUrl);
 
           if (userData) {
             const fullName = [
@@ -335,10 +282,8 @@ function ScholarshipListingContent() {
               name: fullName || "N/A",
               phone: userData.contact || userData.phone || userData.phoneNumber || "N/A",
               email: userData.email || "N/A",
-              certificate: {
-                corFileName: applicantData.corFileName || applicantData.certificateUrl || "",
-                reportCardFileName: applicantData.reportCardFileName || applicantData.credentialsUrl || "",
-              },
+              certificateUrl: certificateUrl,
+              certificateFileName: certificateFileName,
               status: applicantData.status || "Pending",
             };
           } else {
@@ -347,10 +292,8 @@ function ScholarshipListingContent() {
               name: applicantData.name || applicantData.fullName || "User not found",
               phone: applicantData.phone || applicantData.contact || "N/A",
               email: applicantData.email || applicantData.userEmail || "N/A",
-              certificate: {
-                corFileName: applicantData.corFileName || applicantData.certificateUrl || "",
-                reportCardFileName: applicantData.reportCardFileName || applicantData.credentialsUrl || "",
-              },
+              certificateUrl: certificateUrl,
+              certificateFileName: certificateFileName,
               status: applicantData.status || "Pending",
             };
           }
@@ -366,7 +309,7 @@ function ScholarshipListingContent() {
     };
 
     fetchApplicants();
-  }, [scholarshipName, selectedScholarshipId, scholarships]);
+  }, [selectedScholarshipId, scholarshipName]);
 
   // 📧 EMAIL FUNCTIONS
   const handleSendEmail = (applicant: Applicant) => {
@@ -382,14 +325,14 @@ function ScholarshipListingContent() {
 
     setSelectedApplicant(applicant);
     
-    // Email subject for the organization notification
-    setEmailSubject(`New Scholarship Application Update - ${applicant.name} for ${scholarshipName}`);
+    // Email subject
+    setEmailSubject(`SCHOLARSHIP APPLICATION FOR ${scholarshipName.toUpperCase()}`);
     
-    // Email message for the organization
+    // Email message
     setEmailMessage(
       `Dear Scholarship Committee,
 
-We wanted to notify you about an update regarding the scholarship application from ${applicant.name} for the ${scholarshipName} scholarship.
+Please find attached the scholarship application from ${applicant.name} for the ${scholarshipName} scholarship.
 
 Applicant Details:
 - Name: ${applicant.name}
@@ -397,9 +340,9 @@ Applicant Details:
 - Phone: ${applicant.phone}
 - Current Status: ${applicant.status}
 
-This notification is to inform you that there has been an update to this applicant's status or that action may be required on your part.
+The applicant's Enrollment Certificate is attached to this email for your review.
 
-You can review the full application details in your scholarship management dashboard.
+Please reply to ${applicant.email} for any updates or further communication with the applicant.
 
 Best regards,
 SK Central System
@@ -428,11 +371,11 @@ Automated Notification System`
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background-color: #002C84; color: white; padding: 20px; text-align: center;">
             <h1>SK Central System</h1>
-            <h2>Scholarship Application Update Notification</h2>
+            <h2>Scholarship Application</h2>
           </div>
           
           <div style="padding: 20px; background-color: #f9f9f9;">
-            <h3 style="color: #002C84;">Scholarship Application Update</h3>
+            <h3 style="color: #002C84;">New Scholarship Application</h3>
             
             <div style="background-color: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
               <h4 style="color: #1167B1; margin-top: 0;">Applicant Information</h4>
@@ -447,58 +390,66 @@ Automated Notification System`
               <h4 style="color: #1167B1; margin-top: 0;">Message</h4>
               <p style="white-space: pre-wrap;">${emailMessage}</p>
             </div>
+
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
+              <p style="margin: 0; color: #856404;">
+                <strong>📧 For Updates:</strong> Please reply directly to <a href="mailto:${selectedApplicant.email}" style="color: #1167B1;">${selectedApplicant.email}</a> for any communication with the applicant.
+              </p>
+            </div>
             
             <div style="text-align: center; margin-top: 20px;">
               <p style="color: #666; font-size: 12px;">
                 This is an automated notification from SK Central System.<br>
-                Please do not reply to this email.
+                The applicant's Enrollment Certificate is attached to this email.
               </p>
             </div>
           </div>
         </div>
       `;
 
+      // Prepare CC list - always include applicant
+      const ccEmails = selectedApplicant.email !== 'N/A' ? [selectedApplicant.email] : [];
+
+      // Prepare attachments
+      const attachments = [];
+      if (selectedApplicant.certificateUrl && selectedApplicant.certificateUrl.trim() !== '') {
+        attachments.push({
+          filename: selectedApplicant.certificateFileName || 'enrollment_certificate.pdf',
+          path: selectedApplicant.certificateUrl
+        });
+      }
+
       const result = await sendEmailDirectly({
         to: organizationEmail,
+        cc: ccEmails,
         subject: emailSubject,
         html: htmlContent,
+        attachments: attachments
       });
 
       if (result.success) {
-        alert(`✅ Email notification sent successfully to organization (${organizationEmail})!`);
+        alert(`✅ Email sent successfully to organization (${organizationEmail}) with CC to applicant (${selectedApplicant.email})!`);
+        
+        // Update status to "Already Submitted" if auto mode is enabled
+        if (autoStatusUpdate) {
+          await updateApplicantStatus(selectedApplicant.email, 'Already Submitted');
+        }
+        
         setShowEmailModal(false);
         setSelectedApplicant(null);
         setEmailSubject('');
         setEmailMessage('');
-
-        // Send notification to all users
-        await sendNotificationToAllUsers(
-          "Email Notification Sent",
-          `An email notification was sent to ${organizationEmail} regarding applicant ${selectedApplicant.name} for scholarship ${scholarshipName}`,
-          "email"
-        );
-
-        // Log activity
-        if (user) {
-          await recordActivityLog({
-            action: 'Send Email Notification',
-            details: `Sent email notification to ${organizationEmail} about applicant ${selectedApplicant.name} for scholarship ${scholarshipName}`,
-            userId: user.uid,
-            userEmail: user.email || undefined,
-            category: 'user',
-          });
-        }
       } else {
         alert(`❌ Failed to send email: ${result.message}`);
       }
-    } catch (error: unknown) {
+    } catch (error: any) {
       console.error('Error sending email:', error);
       
       // Provide specific error messages
-      let errorMessage = error instanceof Error ? error.message : String(error);
-      if (error instanceof Error && error.message.includes('API route not found')) {
+      let errorMessage = error.message;
+      if (error.message.includes('API route not found')) {
         errorMessage = 'API route not found. Please create the file: app/api/send-email/route.ts';
-      } else if (error instanceof Error && error.message.includes('Gmail credentials not configured')) {
+      } else if (error.message.includes('Gmail credentials not configured')) {
         errorMessage = 'Please update EMAIL_CONFIG with your Gmail credentials at the top of this file.';
       }
       
@@ -511,11 +462,21 @@ Automated Notification System`
   const handleStatusChange = async (index: number, newStatus: string) => {
     try {
       const applicant = applicants[index];
-      console.log('Updating status for applicant:', applicant.id, 'to:', newStatus);
+      await updateApplicantStatus(applicant.email, newStatus);
+    } catch (error) {
+      console.error('Error updating status:', error);
+      alert('Failed to update status. Please try again.');
+    }
+  };
+
+  // Helper function to update applicant status
+  const updateApplicantStatus = async (applicantEmail: string, newStatus: string) => {
+    try {
+      console.log('Updating status for applicant:', applicantEmail, 'to:', newStatus);
 
       // Update the status in Firebase
       const applicantRef = collection(db, 'scholarshipApplicants');
-      const applicantQuery = query(applicantRef, where('email', '==', applicant.email));
+      const applicantQuery = query(applicantRef, where('email', '==', applicantEmail));
       const applicantSnapshot = await getDocs(applicantQuery);
 
       if (applicantSnapshot.docs.length > 0) {
@@ -525,60 +486,196 @@ Automated Notification System`
       }
 
       // Update local state
-      const updatedApplicants = [...applicants];
-      updatedApplicants[index].status = newStatus;
+      const updatedApplicants = applicants.map(a => 
+        a.email === applicantEmail ? { ...a, status: newStatus } : a
+      );
       setApplicants(updatedApplicants);
 
-      // Send notification to all users
-      await sendNotificationToAllUsers(
-        "Applicant Status Updated",
-        `The status of ${applicant.name} for scholarship ${scholarshipName} has been updated to ${newStatus}`,
-        "scholarship"
-      );
-
-      // Log activity
-      if (user) {
-        await recordActivityLog({
-          action: 'Update Applicant Status',
-          details: `Updated status of ${applicant.name} to ${newStatus} for scholarship ${scholarshipName}`,
-          userId: user.uid,
-          userEmail: user.email || undefined,
-          category: 'user',
-        });
-      }
-
     } catch (error) {
-      console.error('Error updating status:', error);
-      alert('Failed to update status. Please try again.');
+      console.error('Error updating status in Firebase:', error);
+      throw error;
     }
   };
 
-  const handleDownload = (fileName: string) => {
-    if (fileName && fileName.trim()) {
+  // Bulk notify all applicants
+  const handleBulkNotify = async () => {
+    if (!organizationEmail) {
+      alert('⚠️ Organization email not found. Please ensure the scholarship has a valid organization email.');
+      return;
+    }
+
+    if (!isEmailConfigured) {
+      alert('⚠️ Email service not configured. Please set up Gmail credentials in EMAIL_CONFIG at the top of the file.');
+      return;
+    }
+
+    const applicantsToNotify = applicants.filter(a => a.email !== 'N/A');
+    
+    if (applicantsToNotify.length === 0) {
+      alert('No applicants to notify.');
+      return;
+    }
+
+    const confirm = window.confirm(`Are you sure you want to send notifications to the organization about all ${applicantsToNotify.length} applicants?`);
+    if (!confirm) return;
+
+    setIsBulkNotifying(true);
+
+    try {
+      // Build applicant list for email
+      const applicantListHtml = applicantsToNotify.map((applicant, index) => `
+        <tr style="background-color: ${index % 2 === 0 ? '#f9f9f9' : '#ffffff'};">
+          <td style="padding: 10px; border: 1px solid #ddd;">${index + 1}</td>
+          <td style="padding: 10px; border: 1px solid #ddd;">${applicant.name}</td>
+          <td style="padding: 10px; border: 1px solid #ddd;">${applicant.email}</td>
+          <td style="padding: 10px; border: 1px solid #ddd;">${applicant.phone}</td>
+          <td style="padding: 10px; border: 1px solid #ddd;">${applicant.status}</td>
+          <td style="padding: 10px; border: 1px solid #ddd;">${applicant.certificateFileName || 'N/A'}</td>
+        </tr>
+      `).join('');
+
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
+          <div style="background-color: #002C84; color: white; padding: 20px; text-align: center;">
+            <h1>SK Central System</h1>
+            <h2>Bulk Scholarship Applications</h2>
+          </div>
+          
+          <div style="padding: 20px; background-color: #f9f9f9;">
+            <h3 style="color: #002C84;">Multiple Applications for ${scholarshipName}</h3>
+            
+            <div style="background-color: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
+              <p>Dear Scholarship Committee,</p>
+              <p>Please find below the list of all applicants for the <strong>${scholarshipName}</strong> scholarship. All Enrollment Certificates are attached to this email for your review.</p>
+              
+              <h4 style="color: #1167B1; margin-top: 20px;">Applicants Summary (${applicantsToNotify.length} Total)</h4>
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                  <thead>
+                    <tr style="background-color: #1167B1; color: white;">
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">#</th>
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">Name</th>
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">Email</th>
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">Phone</th>
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">Status</th>
+                      <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">Certificate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${applicantListHtml}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
+              <p style="margin: 0; color: #856404;">
+                <strong>📧 For Updates:</strong> Please reply directly to each applicant's email address for any communication. All applicants have been CC'd on this email.
+              </p>
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+              <p style="color: #666; font-size: 12px;">
+                This is an automated notification from SK Central System.<br>
+                All applicant Enrollment Certificates are attached to this email.
+              </p>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Prepare CC list - all applicants
+      const ccEmails = applicantsToNotify
+        .filter(a => a.email !== 'N/A')
+        .map(a => a.email);
+
+      // Prepare attachments - all certificates
+      const attachments = applicantsToNotify
+        .filter(a => a.certificateUrl && a.certificateUrl.trim() !== '')
+        .map(a => ({
+          filename: a.certificateFileName || `${a.name}_certificate.pdf`,
+          path: a.certificateUrl
+        }));
+
+      await sendEmailDirectly({
+        to: organizationEmail,
+        cc: ccEmails,
+        subject: `SCHOLARSHIP APPLICATION FOR ${scholarshipName.toUpperCase()} - ${applicantsToNotify.length} Applicants`,
+        html: htmlContent,
+        attachments: attachments
+      });
+
+      // Update status for all applicants if auto mode is enabled
+      if (autoStatusUpdate) {
+        for (const applicant of applicantsToNotify) {
+          await updateApplicantStatus(applicant.email, 'Already Submitted');
+        }
+      }
+
+      setIsBulkNotifying(false);
+      alert(`✅ Bulk notification sent successfully!\n\n${applicantsToNotify.length} applicants notified with ${attachments.length} certificates attached.`);
+    } catch (error) {
+      console.error('Bulk notification error:', error);
+      setIsBulkNotifying(false);
+      alert('❌ Failed to send bulk notification. Please try again.');
+    }
+  };
+
+  // Bulk download all certificates
+  const handleBulkDownload = async () => {
+    const applicantsWithCertificate = applicants.filter(a => a.certificateUrl && a.certificateUrl.trim() !== '');
+    
+    if (applicantsWithCertificate.length === 0) {
+      alert('No certificates available to download.');
+      return;
+    }
+
+    const confirmDownload = window.confirm(`Are you sure you want to download all ${applicantsWithCertificate.length} certificates? This will download them individually.`);
+    if (!confirmDownload) return;
+
+    setIsBulkDownloading(true);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const applicant of applicantsWithCertificate) {
       try {
-        const downloadUrl = fileName.startsWith('http') 
-          ? fileName 
-          : `${fileName}`;
+        // Create a delay between downloads to avoid browser blocking
+        await new Promise(resolve => setTimeout(resolve, 500));
         
+        // Fetch the certificate file as a blob
+        const response = await fetch(applicant.certificateUrl);
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+
         const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = fileName.split('/').pop() || 'document.pdf';
-        link.target = '_blank';
+        link.href = url;
+        link.download = applicant.certificateFileName || 'certificate.pdf';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        
-        console.log('Download initiated for:', downloadUrl);
+        window.URL.revokeObjectURL(url);
+
+        // Update status if auto mode is enabled
+        if (autoStatusUpdate) {
+          await updateApplicantStatus(applicant.email, 'Already Submitted');
+        }
+
+        successCount++;
       } catch (error) {
-        console.error('Download error:', error);
-        alert('Unable to download file. The file might not be available.');
+        console.error(`Failed to download certificate for ${applicant.name}:`, error);
+        failCount++;
       }
-    } else {
-      console.warn("No file name provided for download.");
-      alert('No file available for download.');
     }
+
+    setIsBulkDownloading(false);
+    alert(`✅ Bulk download complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}`);
   };
 
+  // Reset function
   const handleReset = () => {
     setSelectedScholarshipId('');
     setOrganizationEmail('');
@@ -611,11 +708,6 @@ Automated Notification System`
   };
 
   // Sorting function
-  const [sortConfig, setSortConfig] = useState<{ key: string; direction: string; }>({ 
-    key: '', 
-    direction: '' 
-  });
-
   const sortApplicants = (key: string) => {
     const direction = sortConfig.key === key && sortConfig.direction === 'ascending' 
       ? 'descending' 
@@ -708,10 +800,69 @@ Automated Notification System`
 
         {selectedScholarshipId && scholarshipName && (
           <div className="bg-[#f0f8ff] p-4 rounded-md mb-6">
-            <h3 className="font-semibold text-[#002C84]">Scholarship Details</h3>
-            <p><strong>Organization Email:</strong> {organizationEmail}</p>
-            <p><strong>Scholarship Name:</strong> {scholarshipName}</p>
-            <p><strong>Total Applicants:</strong> {applicants.length}</p>
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="font-semibold text-[#002C84]">Scholarship Details</h3>
+                <p><strong>Organization Email:</strong> {organizationEmail}</p>
+                <p><strong>Scholarship Name:</strong> {scholarshipName}</p>
+                <p><strong>Total Applicants:</strong> {applicants.length}</p>
+              </div>
+              
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-300">
+                  <input
+                    type="checkbox"
+                    id="autoStatus"
+                    checked={autoStatusUpdate}
+                    onChange={(e) => setAutoStatusUpdate(e.target.checked)}
+                    className="w-4 h-4 cursor-pointer"
+                  />
+                  <label htmlFor="autoStatus" className="text-sm font-medium text-[#002C84] cursor-pointer">
+                    Auto-update status to "Already Submitted"
+                  </label>
+                </div>
+                
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleBulkNotify}
+                    disabled={isBulkNotifying || applicants.length === 0}
+                    className="bg-[#FCD116] text-black text-xs px-4 py-2 rounded hover:bg-yellow-300 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-2"
+                    title="Send notification emails to organization for all applicants"
+                  >
+                    {isBulkNotifying ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"></circle>
+                          <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" className="opacity-75"></path>
+                        </svg>
+                        Sending...
+                      </>
+                    ) : (
+                      <>📧 Notify All</>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleBulkDownload}
+                    disabled={isBulkDownloading || applicants.filter(a => a.certificateUrl).length === 0}
+                    className="bg-[#1167B1] text-white text-xs px-4 py-2 rounded hover:bg-blue-800 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-2"
+                    title="Download all certificates"
+                  >
+                    {isBulkDownloading ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"></circle>
+                          <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" className="opacity-75"></path>
+                        </svg>
+                        Downloading...
+                      </>
+                    ) : (
+                      <>📥 Download All Certificates</>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -729,18 +880,18 @@ Automated Notification System`
             <thead className="bg-[#1167B1] text-white">
               <tr>
                 <th className="text-left px-4 py-2 cursor-pointer" onClick={() => sortApplicants('name')}>
-                  Name
+                  Name {sortConfig.key === 'name' && (sortConfig.direction === 'ascending' ? '↑' : '↓')}
                 </th>
                 <th className="text-left px-4 py-2 cursor-pointer" onClick={() => sortApplicants('phone')}>
-                  Phone No.
+                  Phone No. {sortConfig.key === 'phone' && (sortConfig.direction === 'ascending' ? '↑' : '↓')}
                 </th>
                 <th className="text-center px-4 py-2 cursor-pointer" onClick={() => sortApplicants('email')}>
-                  Email
+                  Email {sortConfig.key === 'email' && (sortConfig.direction === 'ascending' ? '↑' : '↓')}
                 </th>
-                <th className="text-center px-4 py-2">File Upload</th>
+                <th className="text-center px-4 py-2">Enrollment Certificate</th>
                 <th className="text-center px-4 py-2">Actions</th>
                 <th className="text-center px-4 py-2 cursor-pointer" onClick={() => sortApplicants('status')}>
-                  Status
+                  Status {sortConfig.key === 'status' && (sortConfig.direction === 'ascending' ? '↑' : '↓')}
                 </th>
               </tr>
             </thead>
@@ -752,14 +903,12 @@ Automated Notification System`
                     <td className="px-4 py-3">{a.phone}</td>
                     <td className="px-4 py-3 text-center text-[#1167B1] font-medium">{a.email}</td>
                     <td className="px-4 py-3 text-center">
-                      {a.certificate.corFileName ? (
-                        <button
-                          onClick={() => setPreviewFile(a.certificate.corFileName)}
-                          className="bg-[#1167B1] text-white text-xs px-3 py-1 rounded hover:bg-[#0e5a99]"
-                          title="Click to preview certificate"
-                        >
-                          View Certificate
-                        </button>
+                      {a.certificateUrl ? (
+                        <a href={a.certificateUrl} download style={{ textDecoration: 'none' }}>
+                          <button style={{ backgroundColor: '#007bff', border: 'none', color: 'white', padding: '8px 16px', fontSize: '14px', borderRadius: '4px', cursor: 'pointer' }}>
+                            certificate file
+                          </button>
+                        </a>
                       ) : (
                         <span className="text-gray-500 text-xs">No Certificate</span>
                       )}
@@ -773,28 +922,11 @@ Automated Notification System`
                         >
                           📧 Notify Organization
                         </button>
-                        {a.certificate.reportCardFileName ? (
-                          <button
-                            onClick={() => handleDownload(a.certificate.reportCardFileName)}
-                            className="bg-[#1167B1] text-white text-xs px-3 py-1 rounded hover:bg-blue-800"
-                            title="Download applicant credentials"
-                          >
-                            📄 Download
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            className="bg-gray-300 text-gray-500 text-xs px-3 py-1 rounded cursor-not-allowed"
-                            title="No credentials available"
-                          >
-                            📄 No File
-                          </button>
-                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-center">
                       <select
-                        value={a.status || 'Pending'}
+                        value={a.status}
                         onChange={(e) => handleStatusChange(i, e.target.value)}
                         className="bg-[#1167B1] text-white rounded-lg px-4 py-1"
                       >
@@ -826,7 +958,7 @@ Automated Notification System`
 
         {/* Email Modal */}
         {showEmailModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="fixed inset-0 bg-opacity-50 backdrop-blur-md flex items-center justify-center z-50">
             <div className="bg-white w-[90%] max-w-2xl rounded-lg shadow-lg p-6 relative max-h-[90vh] overflow-y-auto">
               <button
                 onClick={() => {
@@ -838,7 +970,7 @@ Automated Notification System`
                 ×
               </button>
 
-              <h2 className="text-2xl font-bold text-[#002C84] mb-4">📧 Send Notification to Organization</h2>
+              <h2 className="text-2xl font-bold text-[#002C84] mb-4">📧 Send Application to Organization</h2>
 
               {/* Important Notice */}
               <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4">
@@ -850,9 +982,11 @@ Automated Notification System`
                   </div>
                   <div className="ml-3">
                     <p className="text-sm text-blue-700">
-                      <strong>Email will be sent to the organization:</strong> {organizationEmail}
+                      <strong>Email will be sent to:</strong> {organizationEmail}
                       <br />
-                      This notification will inform the scholarship provider about updates regarding the applicant.
+                      <strong>CC:</strong> {selectedApplicant?.email}
+                      <br />
+                      The applicant's Enrollment Certificate will be attached to the email.
                     </p>
                   </div>
                 </div>
@@ -868,6 +1002,7 @@ Automated Notification System`
                     <p><strong>Status:</strong> {selectedApplicant.status}</p>
                   </div>
                   <p className="mt-2"><strong>Scholarship:</strong> {scholarshipName}</p>
+                  <p className="mt-2"><strong>Certificate:</strong> {selectedApplicant.certificateFileName || 'No certificate'}</p>
                 </div>
               )}
 
@@ -875,7 +1010,7 @@ Automated Notification System`
                 <label className="block font-semibold text-[#002C84] mb-2">📧 Recipient (Organization Email)</label>
                 <input
                   type="email"
-                  value={organizationEmail || ''}
+                  value={organizationEmail}
                   readOnly
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-gray-100 text-gray-600"
                   placeholder="Organization email address"
@@ -886,7 +1021,7 @@ Automated Notification System`
                 <label className="block font-semibold text-[#002C84] mb-2">📝 Subject *</label>
                 <input
                   type="text"
-                  value={emailSubject || ''}
+                  value={emailSubject}
                   onChange={(e) => setEmailSubject(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:border-[#1167B1]"
                   placeholder="Enter email subject"
@@ -897,7 +1032,7 @@ Automated Notification System`
               <div className="mb-6">
                 <label className="block font-semibold text-[#002C84] mb-2">💬 Message</label>
                 <textarea
-                  value={emailMessage || ''}
+                  value={emailMessage}
                   onChange={(e) => setEmailMessage(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:border-[#1167B1] h-40 resize-none"
                   placeholder="Enter your message to the organization about this applicant"
@@ -954,25 +1089,30 @@ Automated Notification System`
             </div>
           </div>
         )}
+      </div>
+      
+      <Navbar />
+    </div>
+  );
+}
 
-        <Navbar />
+// Loading fallback component
+function LoadingFallback() {
+  return (
+    <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto">
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1167B1]"></div>
+        <span className="ml-3 text-[#002C84] text-lg">Loading...</span>
       </div>
     </div>
   );
 }
 
-// Main component with Suspense boundary
-export default function ScholarshipListingApplicants() {
+// Main export component wrapped with Suspense
+export default function ScholarshipListing() {
   return (
     <RequireAuth>
-      <Suspense fallback={
-        <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1167B1]"></div>
-            <p className="text-[#002C84] font-semibold">Loading scholarship applicants...</p>
-          </div>
-        </div>
-      }>
+      <Suspense fallback={<LoadingFallback />}>
         <ScholarshipListingContent />
       </Suspense>
     </RequireAuth>

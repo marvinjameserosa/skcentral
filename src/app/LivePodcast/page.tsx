@@ -14,7 +14,10 @@ import {
   query,
   where,
   getDocs,
-  deleteDoc} from "firebase/firestore";
+  deleteDoc,
+  getDoc
+} from "firebase/firestore";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 import Navbar from "../Components/Navbar";
 
 interface PodcastRoom {
@@ -54,6 +57,7 @@ const LivePodcast = () => {
   const [error, setError] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserName, setCurrentUserName] = useState<string | null>(null);
+  const [adminName, setAdminName] = useState<string | null>(null);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
 
   const generateWebRTCRoomId = useCallback(() => {
@@ -93,46 +97,43 @@ const LivePodcast = () => {
     return fallback || Date.now();
   }, []);
 
-  // Get current user ID and name from ApprovedUsers
+  // Authenticate user using Firebase Auth and fetch admin user info if available
   useEffect(() => {
-    const getCurrentUser = async () => {
-      setIsLoadingUser(true);
-      try {
-        // Get user ID from localStorage
-        const userId = localStorage.getItem('userUID');
-        
-        if (!userId) {
-          console.warn('No user ID found in localStorage');
-          setIsLoadingUser(false);
-          return;
-        }
-
+    const auth = getAuth();
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        const userId = user.uid;
         setCurrentUserId(userId);
         
-        // Query ApprovedUsers collection using UID
-        const approvedUsersRef = collection(db, "ApprovedUsers");
-        const q = query(approvedUsersRef, where("uid", "==", userId));
-        const querySnapshot = await getDocs(q);
-        
-        if (!querySnapshot.empty) {
-          const userData = querySnapshot.docs[0].data();
-          const userName = userData.name || userData.userName || userData.displayName || null;
-          
-          setCurrentUserName(userName);
-          console.log('Current user loaded:', { userId, userName });
-        } else {
-          console.warn('User not found in ApprovedUsers collection');
-          setCurrentUserName(null);
+        // Query adminUsers collection using UID
+        try {
+          const adminUsersRef = collection(db, "adminUsers");
+          const q = query(adminUsersRef, where("uid", "==", userId));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+            const userData = querySnapshot.docs[0].data();
+            const userName = userData.name || userData.userName || userData.displayName || user.displayName || 'Anonymous';
+            setCurrentUserName(userName);
+            setAdminName(userName); // Set admin name if user is in adminUsers collection
+            console.log('Admin user loaded:', { userId, userName, adminName: userName });
+          } else {
+            // Not an admin, just set display name
+            console.log('User is not an admin');
+            setCurrentUserName(user.displayName || 'Anonymous');
+            setAdminName(null);
+          }
+        } catch (error) {
+          console.error('Error fetching user data:', error);
+          setCurrentUserName(user.displayName || 'Anonymous');
+          setAdminName(null);
         }
-      } catch (error) {
-        console.error('Error fetching user data:', error);
-        setCurrentUserName(null);
-      } finally {
-        setIsLoadingUser(false);
+      } else {
+        // If no user is authenticated, redirect to the login page.
+        window.location.href = '/login';
       }
-    };
-
-    getCurrentUser();
+      setIsLoadingUser(false);
+    });
+    return () => unsubscribe();
   }, []);
 
   // Clean up ended podcasts after 1 day
@@ -178,7 +179,7 @@ const LivePodcast = () => {
       try {
         const podcastsQuery = query(
           collection(db, "podcasts"),
-          where("status", "==", "approved")
+          where("status", "in", ["approved", "waiting", "live"])
         );
 
         unsubscribe = onSnapshot(
@@ -316,42 +317,26 @@ const LivePodcast = () => {
     };
   }, [generateWebRTCRoomId, getErrorMessage, parseDateTime]);
 
-  // Check if current user is the host of a specific podcast
+  // Check if the current user is authorized to be the host
   const checkIfUserIsHost = useCallback((room: PodcastRoom): boolean => {
-    // Must have both user ID and user name loaded
-    if (!currentUserId || !currentUserName) {
+    if (!adminName) {
+      console.log('No admin name found for user');
+      return false;
+    }
+    if (!room.speaker) {
+      console.log('No speaker defined for podcast');
       return false;
     }
     
-    // Check if the podcast has a userUID
-    if (!room.userUID) {
-      return false;
-    }
-
-    // Primary check: UID must match
-    const uidMatches = room.userUID === currentUserId;
+    const isMatch = adminName.toLowerCase().trim() === room.speaker.toLowerCase().trim();
+    console.log('Host check:', { 
+      adminName, 
+      speaker: room.speaker, 
+      isMatch 
+    });
     
-    // Secondary check: Name should match (with normalization)
-    const normalizedCurrentName = currentUserName.toLowerCase().trim();
-    const normalizedHostName = (room.hostName || '').toLowerCase().trim();
-    const nameMatches = normalizedCurrentName === normalizedHostName;
-    
-    // Both conditions must be true
-    const isHost = uidMatches && nameMatches;
-    
-    // Debug logging
-    if (uidMatches && !nameMatches) {
-      console.warn('UID matches but name does not:', {
-        podcastId: room.id,
-        currentUserId,
-        podcastUserUID: room.userUID,
-        currentUserName: normalizedCurrentName,
-        hostName: normalizedHostName
-      });
-    }
-    
-    return isHost;
-  }, [currentUserId, currentUserName]);
+    return isMatch;
+  }, [adminName]);
 
   const joinPodcastRoom = async (
     roomId: string,
@@ -361,42 +346,67 @@ const LivePodcast = () => {
     role: "host" | "listener" = "listener"
   ) => {
     try {
-      const roomDoc = await new Promise<DocumentData | undefined>((resolve, reject) => {
-        const unsubscribe = onSnapshot(
-          doc(db, "podcasts", roomId),
-          (doc) => {
-            unsubscribe();
-            if (doc.exists()) {
-              resolve(doc.data());
-            } else {
-              reject(new Error('Podcast not found'));
-            }
-          },
-          (error) => {
-            unsubscribe();
-            reject(error);
-          }
-        );
-      });
-
-      if (!roomDoc || !roomDoc.approved) {
-        throw new Error('Podcast not approved');
+      console.log('Attempting to join podcast:', { roomId, userId, userName, role });
+      
+      // Fetch the podcast document
+      const podcastDocRef = doc(db, "podcasts", roomId);
+      const podcastDoc = await getDoc(podcastDocRef);
+      
+      if (!podcastDoc.exists()) {
+        throw new Error('Podcast not found');
       }
+      
+      const roomDoc = podcastDoc.data();
+      console.log('Podcast data:', roomDoc);
 
+      // Check if podcast has ended
       if (roomDoc.status === 'ended') {
         throw new Error('This podcast has ended');
       }
 
+      // For listeners, check if podcast is available
+      if (role === 'listener') {
+        if (roomDoc.status !== 'approved' && roomDoc.status !== 'live' && roomDoc.status !== 'waiting') {
+          throw new Error('Podcast is not available for joining');
+        }
+      }
+
+      // If joining as host, verify authorization
+      if (role === 'host') {
+        if (!adminName) {
+          throw new Error('You must be an admin to join as host');
+        }
+        
+        const speaker = roomDoc.speaker;
+        if (!speaker) {
+          throw new Error('Podcast has no designated speaker');
+        }
+        
+        const isAuthorized = adminName.toLowerCase().trim() === speaker.toLowerCase().trim();
+        console.log('Host authorization check:', { 
+          adminName, 
+          speaker, 
+          isAuthorized 
+        });
+        
+        if (!isAuthorized) {
+          throw new Error(`Only ${speaker} can join as host for this podcast`);
+        }
+      }
+
+      // Check participant count
       const participantsQuery = query(
         collection(db, `podcasts/${roomId}/participants`),
         where("isActive", "==", true)
       );
       const participantsSnapshot = await getDocs(participantsQuery);
       
-      if (participantsSnapshot.size >= (roomDoc.maxParticipants || 50)) {
-        throw new Error('Room is full (maximum 50 participants reached)');
+      const maxParts = roomDoc.maxParticipants || 50;
+      if (participantsSnapshot.size >= maxParts) {
+        throw new Error(`Room is full (maximum ${maxParts} participants reached)`);
       }
 
+      // Add participant
       const participantRef = doc(db, `podcasts/${roomId}/participants`, userId);
       const participantData: PodcastParticipant = {
         userId,
@@ -405,17 +415,28 @@ const LivePodcast = () => {
         joinedAt: Date.now(),
         isActive: true
       };
-      await setDoc(participantRef, participantData);
       
-      const roomRef = doc(db, "podcasts", roomId);
-      await updateDoc(roomRef, {
+      await setDoc(participantRef, participantData);
+      console.log('Participant added successfully');
+      
+      // Update participant count
+      await updateDoc(podcastDocRef, {
         participantCount: increment(1)
       });
+      
+      // CRITICAL FIX: Update status to 'live' when host joins
+      if (role === 'host') {
+        await updateDoc(podcastDocRef, {
+          status: 'live',
+          liveStartedAt: Date.now()
+        });
+        console.log('✅ Podcast status updated to LIVE in Firebase');
+      }
       
       return { success: true, webrtcRoomId };
     } catch (error) {
       console.error('Error joining podcast:', error);
-      throw new Error(`Failed to join podcast: ${getErrorMessage(error)}`);
+      throw error;
     }
   };
 
@@ -431,17 +452,30 @@ const LivePodcast = () => {
         return;
       }
 
-      // Verify host authorization
       if (asHost) {
         if (!currentUserId || !currentUserName) {
           alert('Unable to verify your identity. Please refresh the page and try again.');
           return;
         }
 
+        if (!adminName) {
+          alert('You must be an admin to join as host. Please ensure you are logged in with an admin account.');
+          return;
+        }
+
         const isHost = checkIfUserIsHost(room);
         
         if (!isHost) {
-          alert('You are not authorized to join as host for this podcast. Your account must match the podcast creator.');
+          alert(`You are not authorized to host this podcast. Only ${room.speaker} can join as host.`);
+          return;
+        }
+
+        // Confirm host wants to start the podcast
+        const confirmStart = window.confirm(
+          `You are about to start "${room.title}" as the host. The podcast status will change to LIVE. Continue?`
+        );
+        
+        if (!confirmStart) {
           return;
         }
       }
@@ -452,6 +486,8 @@ const LivePodcast = () => {
       if (!room.webrtcRoomId) {
         throw new Error('WebRTC room ID not available');
       }
+      
+      console.log('Joining podcast:', { roomId: room.id, userId, userName, asHost });
       
       const result = await joinPodcastRoom(
         room.id, 
@@ -465,10 +501,13 @@ const LivePodcast = () => {
         const url = asHost 
           ? `/LivePodcast/Host?roomId=${room.id}&webrtcRoomId=${result.webrtcRoomId}&userId=${userId}&userName=${encodeURIComponent(userName)}`
           : `/LivePodcast/Listener?roomId=${room.id}&webrtcRoomId=${result.webrtcRoomId}&userId=${userId}&userName=${encodeURIComponent(userName)}`;
+        
+        console.log('Redirecting to:', url);
         window.location.href = url;
       }
     } catch (error) {
       const errorMsg = getErrorMessage(error);
+      console.error('Failed to join podcast:', error);
       alert(`Failed to join podcast: ${errorMsg}`);
     }
   };
@@ -495,7 +534,7 @@ const LivePodcast = () => {
         };
       case "ended":
         return {
-          className: "bg-gray-50 text-gray-700 border-gray-200 ring-1 ring-gray-300",
+          className: "bg-gray-50 text-gray-700 border-gray-200 ring-gray-300",
           icon: "🏁",
           pulse: ""
         };
@@ -507,10 +546,6 @@ const LivePodcast = () => {
         };
     }
   }, []);
-
-  const handlePodcastRequest = () => {
-    window.location.href = '/LivePodcast/PodcastRequest';
-  };
 
   if (error && !isLoading) {
     return (
@@ -537,7 +572,6 @@ const LivePodcast = () => {
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto relative">
       <Navbar />
       
-      {/* Floating Action Button for Podcast Request */}
       <button
         onClick={() => (window.location.href = '/LivePodcast/createpodcast')}
         className="fixed bottom-6 right-6 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white w-14 h-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 z-50 group flex items-center justify-center"
@@ -546,7 +580,6 @@ const LivePodcast = () => {
         <span className="text-2xl">🎙️</span>
       </button>
 
-      {/* Floating Action Button for Podcast Approval */}
       <button
         onClick={() => (window.location.href = '/LivePodcast/PodcastApproval')}
         className="fixed bottom-24 right-6 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white w-14 h-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 z-50 group flex items-center justify-center"
@@ -564,9 +597,9 @@ const LivePodcast = () => {
           Join approved podcasts and connect with hosts and listeners in real-time
         </p>
         {currentUserName && (
-          <p className="text-sm text-gray-500 mt-2">
-            Logged in as: <span className="font-semibold">{currentUserName}</span>
-          </p>
+          <div className="text-sm text-gray-500 mt-2 space-y-1">
+            
+          </div>
         )}
       </div>
 
@@ -629,7 +662,7 @@ const LivePodcast = () => {
                         <span className="mr-3 text-lg">👤</span>
                         <span className="font-medium truncate">{room.hostName}</span>
                         {isHost && (
-                          <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                          <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-bold">
                             You
                           </span>
                         )}
@@ -669,7 +702,7 @@ const LivePodcast = () => {
                             }`}
                           >
                             <span className="mr-2">👑</span>
-                            Join as Host
+                            Start as Host
                           </button>
                         )}
 

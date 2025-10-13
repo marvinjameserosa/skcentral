@@ -43,13 +43,12 @@ interface JobType {
   status?: 'active' | 'archived' | 'expired';
 }
 
-type ActionType = "save" | "delete" | "archive" | "publish" | null;
+type ActionType = "save" | "archive" | "publish" | null;
 
 interface LoadingStates {
   fetching: boolean;
   publishing: boolean;
   saving: boolean;
-  deleting: boolean;
   archiving: boolean;
 }
 
@@ -104,7 +103,6 @@ export default function JobListing() {
     fetching: false,
     publishing: false,
     saving: false,
-    deleting: false,
     archiving: false,
   });
 
@@ -115,11 +113,9 @@ export default function JobListing() {
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-
-        // Log page access with specific page name
         await recordActivityLog({
           action: "View Page",
-          details: "User accessed the Job Listing page", // Updated page name
+          details: "User accessed the Job Listing page",
           userId: currentUser.uid,
           userEmail: currentUser.email || undefined,
           category: "user",
@@ -128,7 +124,6 @@ export default function JobListing() {
         setUser(null);
       }
     });
-
     return () => unsubscribe();
   }, []);
 
@@ -219,7 +214,6 @@ export default function JobListing() {
   const fetchJobListings = useCallback(async () => {
     updateLoadingState('fetching', true);
     try {
-      // Fetch active/expired jobs
       const qJobs = query(collection(db, "jobListings"), orderBy("createdAt", "desc"));
       const querySnapshot = await getDocs(qJobs);
       const fetchedJobs = querySnapshot.docs.map((docSnap) => {
@@ -232,7 +226,6 @@ export default function JobListing() {
       });
       setJobListings(fetchedJobs);
 
-      // Fetch archived jobs
       const archivedQ = query(collection(db, "archivedJobs"), orderBy("archivedAt", "desc"));
       const archivedSnapshot = await getDocs(archivedQ);
       const archived = archivedSnapshot.docs.map((docSnap) => {
@@ -262,7 +255,6 @@ export default function JobListing() {
     } else {
       filtered = jobListings.filter(job => job.status === filterStatus);
     }
-    // Apply search filter
     if (searchTerm) {
       filtered = filtered.filter(job =>
         job.position.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -270,7 +262,6 @@ export default function JobListing() {
         job.location.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    // Apply sorting
     switch (sortBy) {
       case 'oldest':
         filtered = [...filtered].reverse();
@@ -280,7 +271,7 @@ export default function JobListing() {
           new Date(a.deadline).getTime() - new Date(b.deadline).getTime()
         );
         break;
-      default: // newest
+      default:
         break;
     }
     return filtered;
@@ -298,7 +289,6 @@ export default function JobListing() {
     fetchJobListings();
   }, [fetchJobListings]);
 
-  // Reset pagination when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, filterStatus, sortBy]);
@@ -319,12 +309,10 @@ export default function JobListing() {
   // Handle form changes
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value, files } = e.target as HTMLInputElement;
-
     if (files && files[0]) {
       handleFileSelect(files[0]);
     } else {
       setForm(prev => ({ ...prev, [name]: value }));
-      // Clear error for this field when user starts typing
       if (formErrors[name as keyof FormErrors]) {
         setFormErrors(prev => ({ ...prev, [name]: undefined }));
       }
@@ -338,7 +326,7 @@ export default function JobListing() {
     return await getDownloadURL(snapshot.ref);
   }, []);
 
-  // Delete image from storage
+  // Delete image from storage (kept for updating images)
   const deleteImage = useCallback(async (imageUrl: string) => {
     if (imageUrl && imageUrl !== "/testpic.jpg") {
       try {
@@ -354,12 +342,10 @@ export default function JobListing() {
   const handlePublishSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const errors = validateForm();
-
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
       return;
     }
-
     setActionType("publish");
     setConfirmMessage("Are you sure you want to publish this job?");
     setShowConfirmationModal(true);
@@ -372,7 +358,6 @@ export default function JobListing() {
       if (selectedFile) {
         imageUrl = await uploadImage(selectedFile);
       }
-
       const newJobData = {
         ...form,
         img: imageUrl,
@@ -388,18 +373,16 @@ export default function JobListing() {
         ...prev,
       ]);
 
-      // Record activity log with detailed structure like scholarship
       if (user) {
         await recordActivityLog({
           action: "Create Job",
           details: `Published new job: ${form.position} at ${form.company}`,
           userId: user.uid,
           userEmail: user.email || undefined,
-          category: "admin", // Changed from "jobs"
+          category: "admin",
         });
       }
 
-      // Send notification to all users
       await sendNotificationToAllUsers(
         "New Job Posted! 🎉",
         `A new ${form.position} position is now available at ${form.company}. Apply now!`,
@@ -420,17 +403,14 @@ export default function JobListing() {
   // Enhanced save function with activity logging and notifications
   const handleSave = () => {
     const errors = validateForm();
-
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
       return;
     }
-
     if (!modalJobId) {
       console.error("No job selected for update");
       return;
     }
-
     setActionType("save");
     setConfirmMessage("Are you sure you want to save changes to this job?");
     setShowConfirmationModal(true);
@@ -438,12 +418,9 @@ export default function JobListing() {
 
   const executeSave = async () => {
     if (!modalJobId) return;
-
     updateLoadingState('saving', true);
     try {
       let imageUrl = form.img;
-
-      // Handle image update
       if (selectedFile) {
         const oldJob = jobListings.find(j => j.id === modalJobId);
         if (oldJob?.img) {
@@ -451,7 +428,6 @@ export default function JobListing() {
         }
         imageUrl = await uploadImage(selectedFile);
       }
-
       const updatedData = {
         ...form,
         img: imageUrl,
@@ -463,24 +439,20 @@ export default function JobListing() {
 
       setJobListings(prev =>
         prev.map(job =>
-          job.id === modalJobId
-            ? { ...job, ...updatedData }
-            : job
+          job.id === modalJobId ? { ...job, ...updatedData } : job
         )
       );
 
-      // Record activity log with detailed structure
       if (user) {
         await recordActivityLog({
           action: "Update Job",
           details: `Updated job: ${form.position} at ${form.company}`,
           userId: user.uid,
           userEmail: user.email || undefined,
-          category: "admin", // Changed from "jobs"
+          category: "admin",
         });
       }
 
-      // Send notification to all users about job update
       await sendNotificationToAllUsers(
         "Job Updated! 📝",
         `The ${form.position} position at ${form.company} has been updated. Check it out!`,
@@ -500,58 +472,6 @@ export default function JobListing() {
     }
   };
 
-  // Enhanced delete function with activity logging
-  const handleDelete = () => {
-    if (!modalJobId) return;
-    setActionType("delete");
-    setConfirmMessage("Are you sure you want to delete this job? This action cannot be undone.");
-    setShowConfirmationModal(true);
-  };
-
-  const executeDelete = async () => {
-    if (!modalJobId) return;
-
-    updateLoadingState('deleting', true);
-    try {
-      const job = jobListings.find(j => j.id === modalJobId);
-      if (job?.img) {
-        await deleteImage(job.img);
-      }
-
-      await deleteDoc(doc(db, "jobListings", modalJobId));
-      setJobListings(prev => prev.filter(j => j.id !== modalJobId));
-
-      // Record activity log with detailed structure
-      if (user && job) {
-        await recordActivityLog({
-          action: "Delete Job",
-          details: `Deleted job: ${job.position} at ${job.company}`,
-          userId: user.uid,
-          userEmail: user.email || undefined,
-          category: "admin", // Changed from "jobs"
-        });
-      }
-
-      // Send notification to all users about job deletion
-      if (job) {
-        await sendNotificationToAllUsers(
-          "Job Removed 🗑️",
-          `The ${job.position} position at ${job.company} is no longer available.`,
-          'job_deleted'
-        );
-      }
-
-      setModalJobId(null);
-      showNotification("Job deleted successfully!");
-    } catch (error) {
-      console.error("Error deleting job: ", error);
-      showNotification("Failed to delete job. Please try again.", 'error');
-    } finally {
-      updateLoadingState('deleting', false);
-      setShowConfirmationModal(false);
-    }
-  };
-
   // Enhanced archive function with activity logging and notifications
   const handleArchive = (jobId: string) => {
     setActionType("archive");
@@ -562,34 +482,29 @@ export default function JobListing() {
 
   const executeArchive = async () => {
     if (!modalJobId) return;
-
     updateLoadingState('archiving', true);
     try {
       const jobRef = doc(db, "jobListings", modalJobId);
       const jobSnap = await getDoc(jobRef);
-
       if (jobSnap.exists()) {
         const jobData = jobSnap.data();
         await setDoc(doc(db, "archivedJobs", modalJobId), {
           ...jobData,
           archivedAt: serverTimestamp(),
         });
-
         await deleteDoc(jobRef);
         setJobListings(prev => prev.filter(j => j.id !== modalJobId));
 
-        // Record activity log with detailed structure
         if (user) {
           await recordActivityLog({
             action: "Archive Job",
             details: `Archived job: ${jobData.position} at ${jobData.company}`,
             userId: user.uid,
             userEmail: user.email || undefined,
-            category: "admin", // Changed from "jobs"
+            category: "admin",
           });
         }
 
-        // Send notification to all users about job archival
         await sendNotificationToAllUsers(
           "Job Archived 📦",
           `The ${jobData.position} position at ${jobData.company} has been archived and is no longer accepting applications.`,
@@ -619,11 +534,10 @@ export default function JobListing() {
       case "save":
         await executeSave();
         break;
-      case "delete":
-        await executeDelete();
-        break;
       case "archive":
         await executeArchive();
+        break;
+      default:
         break;
     }
   };
@@ -632,7 +546,6 @@ export default function JobListing() {
     setShowConfirmationModal(false);
     setActionType(null);
     setModalJobId(null);
-
     if (isEditing) {
       setIsEditing(false);
       if (modalJobId) {
@@ -719,7 +632,7 @@ export default function JobListing() {
           className={`w-full bg-blue-100 p-2 rounded border ${
             formErrors[id as keyof FormErrors] ? 'border-red-500' : 'border-transparent'
           }`}
-            value={(form as any)[id] ?? ""}
+          value={(form as any)[id] ?? ""}
           onChange={handleChange}
           disabled={modalJobId ? !isEditing : false}
         />
@@ -747,7 +660,6 @@ export default function JobListing() {
             <form onSubmit={handlePublishSubmit} className="space-y-4">
               {renderFormField("position", "Job Position", "text", true, "e.g., Frontend Developer")}
               {renderFormField("description", "Job Description", "text", true, "Describe the role, responsibilities, and expectations", "textarea")}
-
               <div className="flex gap-3 w-full">
                 <div className="w-full">
                   {renderFormField("company", "Company", "text", true, "Company Name")}
@@ -756,7 +668,6 @@ export default function JobListing() {
                   {renderFormField("companyEmail", "Company Email", "email", true, "hr@company.com")}
                 </div>
               </div>
-
               <div className="flex gap-3 w-full">
                 <div className="w-full">
                   {renderFormField("salary", "Salary", "text", true, "e.g., ₱25,000 - ₱35,000 / month")}
@@ -765,7 +676,6 @@ export default function JobListing() {
                   {renderFormField("deadline", "Application Deadline", "date", true)}
                 </div>
               </div>
-
               <div className="flex gap-3 w-full">
                 <div className="w-full">
                   {renderFormField("location", "Location", "text", true, "e.g., Remote, Makati, QC")}
@@ -774,7 +684,6 @@ export default function JobListing() {
                   {renderFormField("requirements", "Requirements", "text", true, "Key skills/qualifications (comma-separated)")}
                 </div>
               </div>
-
               <div>
                 <label htmlFor="img" className="block text-sm font-semibold text-gray-700 mb-1">
                   Picture
@@ -813,7 +722,6 @@ export default function JobListing() {
                   </div>
                 )}
               </div>
-
               <div className="flex justify-end gap-4 mt-6">
                 <button
                   type="button"
@@ -970,7 +878,6 @@ export default function JobListing() {
                   <option value={16}>16</option>
                 </select>
               </div>
-
               <div className="flex items-center space-x-2">
                 <button
                   className={`px-4 py-2 text-white rounded-md transition-colors ${
@@ -983,7 +890,6 @@ export default function JobListing() {
                 >
                   Previous
                 </button>
-
                 <div className="flex gap-1">
                   {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
                     let pageNum;
@@ -996,7 +902,6 @@ export default function JobListing() {
                     } else {
                       pageNum = currentPage - 2 + i;
                     }
-
                     return (
                       <button
                         key={pageNum}
@@ -1012,7 +917,6 @@ export default function JobListing() {
                     );
                   })}
                 </div>
-
                 <button
                   className={`px-4 py-2 text-white rounded-md transition-colors ${
                     currentPage === totalPages
@@ -1031,7 +935,7 @@ export default function JobListing() {
 
         {/* Enhanced Modal for Job Details */}
         {modalJobId && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#e7f0fa] rounded-xl w-full max-w-6xl max-h-[90vh] overflow-y-auto p-6 text-left shadow-xl border-2 border-[#0A2F7A] relative">
               <button
                 onClick={() => {
@@ -1066,7 +970,6 @@ export default function JobListing() {
                         </span>
                       </div>
                     </div>
-
                     {isEditing && (
                       <div className="mt-4 w-full">
                         <label className="block text-sm font-semibold text-gray-700 mb-1">
@@ -1101,18 +1004,15 @@ export default function JobListing() {
                       <div className="lg:col-span-2">
                         {renderFormField("position", "Job Position")}
                       </div>
-
                       <div className="lg:col-span-2">
                         {renderFormField("description", "Job Description", "text", true, "Enter description", "textarea")}
                       </div>
-
                       {renderFormField("company", "Company")}
                       {renderFormField("companyEmail", "Company Email", "email")}
                       {renderFormField("salary", "Salary")}
                       {renderFormField("location", "Location")}
                       {renderFormField("requirements", "Requirements")}
                       {renderFormField("deadline", "Application Deadline", "date")}
-
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-1">
                           Days Until Deadline
@@ -1134,14 +1034,6 @@ export default function JobListing() {
                         className="flex-1 bg-orange-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-orange-700 disabled:opacity-50 transition-colors"
                       >
                         {loadingStates.archiving ? "Archiving..." : "Archive Job"}
-                      </button>
-
-                      <button
-                        onClick={handleDelete}
-                        disabled={loadingStates.deleting}
-                        className="flex-1 bg-red-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
-                      >
-                        {loadingStates.deleting ? "Deleting..." : "Delete Job"}
                       </button>
 
                       <button
@@ -1204,13 +1096,13 @@ export default function JobListing() {
 
         {/* Enhanced Confirmation Modal */}
         {showConfirmationModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
+          <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
             <div className="bg-white p-6 rounded-lg shadow-2xl text-center max-w-md mx-4">
               <div className="mb-4">
-                {actionType === 'delete' && (
-                  <div className="w-16 h-16 mx-auto mb-4 bg-red-100 rounded-full flex items-center justify-center">
-                    <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                {(actionType === 'publish' || actionType === 'save') && (
+                  <div className="w-16 h-16 mx-auto mb-4 bg-blue-100 rounded-full flex items-center justify-center">
+                    <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
                     </svg>
                   </div>
                 )}
@@ -1221,18 +1113,9 @@ export default function JobListing() {
                     </svg>
                   </div>
                 )}
-                {(actionType === 'publish' || actionType === 'save') && (
-                  <div className="w-16 h-16 mx-auto mb-4 bg-blue-100 rounded-full flex items-center justify-center">
-                    <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
-                    </svg>
-                  </div>
-                )}
               </div>
-
               <h3 className="text-lg font-semibold text-gray-900 mb-2">Confirm Action</h3>
               <p className="text-gray-600 mb-6">{confirmMessage}</p>
-
               <div className="flex gap-3 justify-center">
                 <button
                   onClick={handleCancelConfirmation}
@@ -1244,9 +1127,7 @@ export default function JobListing() {
                   onClick={handleConfirmAction}
                   disabled={Object.values(loadingStates).some(Boolean)}
                   className={`px-6 py-2 text-white rounded-md transition-colors disabled:opacity-50 ${
-                    actionType === 'delete'
-                      ? 'bg-red-600 hover:bg-red-700'
-                      : actionType === 'archive'
+                    actionType === 'archive'
                       ? 'bg-orange-600 hover:bg-orange-700'
                       : 'bg-[#1167B1] hover:bg-[#0A4F9E]'
                   }`}
@@ -1260,7 +1141,7 @@ export default function JobListing() {
 
         {/* Enhanced Success/Error Modal */}
         {showSuccessModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
+          <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
             <div className="bg-white p-6 rounded-lg shadow-2xl text-center max-w-md mx-4">
               <div className="w-16 h-16 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
                 <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">

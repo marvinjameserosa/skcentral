@@ -23,33 +23,20 @@ interface EventData {
   deadline?: string;
   tags?: string[];
   createdAt: string;
+  status?: string;
 }
 
 const auth = getAuth();
 
-// ✅ Format Firestore date into readable parts
-function formatDate(firestoreDate: string): { date: string; year: string } {
-  const dateObj = new Date(`${firestoreDate}T00:00:00`);
-  return {
-    year: dateObj.getFullYear().toString(),
-    date: dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-  };
-}
-
-// ✅ Format time from "HH:mm" to "h:mm AM/PM"
+// Format time from "HH:mm" to "h:mm AM/PM"
 function formatTime(rawTime: string): string {
   if (!rawTime) return '';
-  
-  // If it's already in 12-hour format (contains AM/PM), return as is
   if (rawTime.includes('AM') || rawTime.includes('PM')) {
     return rawTime;
   }
-  
-  // If it's in 24-hour format (HH:mm), convert to 12-hour format
   const [hours, minutes] = rawTime.split(':').map(Number);
   const dummyDate = new Date();
   dummyDate.setHours(hours, minutes, 0, 0);
-
   return dummyDate.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -57,26 +44,20 @@ function formatTime(rawTime: string): string {
   });
 }
 
-// Function to add a notification for all users
-
-// Example usage: Notify users about a new event
-
-// Handle event update
-
 export default function CommunityEventPage() {
   const [user, setUser] = useState<User | null>(null);
   const [events, setEvents] = useState<EventData[]>([]);
+  const [filteredEvents, setFilteredEvents] = useState<EventData[]>([]);
+  const [filter, setFilter] = useState<'active' | 'past' | 'cancelled'>('active');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Authentication and activity logging - INTEGRATED (NO NOTIFICATION)
+  // Authentication and activity logging
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-
         try {
-          // Log page access with specific page name
           await recordActivityLog({
             action: "View Page",
             details: "User accessed the Community Events page",
@@ -92,71 +73,111 @@ export default function CommunityEventPage() {
         setUser(null);
       }
     });
-
     return () => unsubscribe();
   }, []);
 
-  // Fetch events from Firestore
+  // Fetch events from single 'events' collection - only depends on user
   useEffect(() => {
     const fetchEvents = async () => {
-      if (!user) return; // Wait for user authentication
-
+      if (!user) return;
       try {
         setLoading(true);
+
         const eventsCollection = collection(db, 'events');
-        const eventsQuery = query(eventsCollection, orderBy('createdAt', 'desc'));
-        const eventsSnapshot = await getDocs(eventsQuery);
         
-        const eventsData: EventData[] = eventsSnapshot.docs.map((doc) => {
-          const data = doc.data();
+        let snapshot;
+        try {
+          const eventsQuery = query(eventsCollection, orderBy('createdAt', 'desc'));
+          snapshot = await getDocs(eventsQuery);
+        } catch (orderError) {
+          console.log('Could not order by createdAt, fetching without ordering:', orderError);
+          snapshot = await getDocs(eventsCollection);
+        }
+
+        const data: EventData[] = snapshot.docs.map((doc) => {
+          const d = doc.data();
           return {
             id: doc.id,
-            eventId: data.eventId || '',
-            title: data.title || '',
-            description: data.description || '',
-            date: data.date || '',
-            eventTime: data.eventTime || '',
-            time: data.time || '',
-            location: data.location || '',
-            image: data.image || '/testpic.jpg',
-            capacity: data.capacity || '',
-            deadline: data.deadline || '',
-            tags: data.tags || [],
-            createdAt: data.createdAt || '',
+            eventId: d.eventId || '',
+            title: d.title || '',
+            description: d.description || '',
+            date: d.date || '',
+            eventTime: d.eventTime || '',
+            time: d.time || '',
+            location: d.location || '',
+            image: d.image || '/testpic.jpg',
+            capacity: d.capacity || '',
+            deadline: d.deadline || '',
+            tags: d.tags || [],
+            createdAt: d.createdAt || '',
+            status: d.status || 'active',
           };
         });
 
-        setEvents(eventsData);
+        console.log(`Fetched ${data.length} events from events collection:`, data);
+        setEvents(data);
 
-        // Log successful events fetch
         await recordActivityLog({
           action: 'Load Community Events',
-          details: `Successfully loaded ${eventsData.length} community events`,
+          details: `Loaded ${data.length} events from events collection`,
           userId: user.uid,
           userEmail: user.email || undefined,
           category: 'events',
         });
-
       } catch (err) {
         console.error('Error fetching events:', err);
-        setError('Failed to load events. Please try again.');
-
-        // Log error
+        setError('Failed to load events.');
         await recordActivityLog({
           action: 'Load Events Error',
-          details: `Failed to load community events: ${err}`,
+          details: `Failed to load events: ${err}`,
           userId: user.uid,
           userEmail: user.email || undefined,
           category: 'events',
-          severity: 'medium',
         });
       } finally {
         setLoading(false);
       }
     };
-
     fetchEvents();
   }, [user]);
+
+  // Apply filter based on status and date
+  useEffect(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Reset time for accurate date comparison
+    let filtered: EventData[] = [];
+
+    if (filter === 'active') {
+      // Active: status is 'active' (case-insensitive) AND date is today or future
+      filtered = events.filter((event) => {
+        const eventDate = new Date(event.date);
+        eventDate.setHours(0, 0, 0, 0);
+        const isActive = event.status?.toLowerCase() === 'active';
+        const isFutureOrToday = eventDate >= now;
+        return isActive && isFutureOrToday;
+      });
+    } else if (filter === 'past') {
+      // Past: date is in the past AND status is not 'cancelled'
+      filtered = events.filter((event) => {
+        const eventDate = new Date(event.date);
+        eventDate.setHours(0, 0, 0, 0);
+        const isPast = eventDate < now;
+        const isNotCancelled = event.status?.toLowerCase() !== 'cancelled';
+        return isPast && isNotCancelled;
+      });
+    } else if (filter === 'cancelled') {
+      // Cancelled: status is 'cancelled' (case-insensitive)
+      filtered = events.filter((event) => {
+        return event.status?.toLowerCase() === 'cancelled';
+      });
+    }
+
+    setFilteredEvents(filtered);
+  }, [filter, events]);
+
+  const handleFilterChange = (newFilter: 'active' | 'past' | 'cancelled') => {
+    setFilter(newFilter);
+  };
 
   const handleManageEventClick = async (eventId: string, eventTitle: string) => {
     if (user) {
@@ -182,16 +203,38 @@ export default function CommunityEventPage() {
     }
   };
 
+  // Show floating button only when there are events
+  const showFloatingButton = events.length > 0;
+
   return (
     <RequireAuth>
       <div className="ml-[260px] min-h-screen p-8 bg-[#f4f8fc] overflow-auto">
         {/* Header */}
-        <header className="mb-10">
+        <header className="mb-6">
           <h1 className="text-3xl font-bold text-[#08326A]">Community Events</h1>
-          <p className="text-lg text-gray-600 mt-2">
+          <p className="text-lg text-gray-600 mt-1">
             The hub that connects kabataan with events and activities led by the SK Federation.
           </p>
         </header>
+
+        {/* Filter Tabs */}
+        <div className="flex gap-4 mb-8">
+          {['active', 'past', 'cancelled'].map((type) => (
+            <button
+              key={type}
+              onClick={() => handleFilterChange(type as 'active' | 'past' | 'cancelled')}
+              className={`px-5 py-2 rounded-lg font-semibold transition ${
+                filter === type
+                  ? 'bg-[#08326A] text-white'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              {type === 'active' && 'Active Events'}
+              {type === 'past' && 'Past Events'}
+              {type === 'cancelled' && 'Canceled Events'}
+            </button>
+          ))}
+        </div>
 
         {/* Loading State */}
         {loading && (
@@ -203,62 +246,73 @@ export default function CommunityEventPage() {
           </div>
         )}
 
-        {/* Error State */}
+        {/* Error */}
         {error && !loading && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
             <p>{error}</p>
           </div>
         )}
 
-        {/* Events List */}
+        {/* Event List */}
         {!loading && !error && (
           <div className="flex flex-col gap-6 w-full items-center">
-            {events.length === 0 ? (
+            {filteredEvents.length === 0 ? (
               <div className="text-center py-20">
                 <Image
-                  src="/no-events.svg"
-                  alt="No Events"
-                  width={200}
-                  height={200}
+                  src="/event.png"
+                  alt="Events"
+                  width={300}
+                  height={300}
                   className="mx-auto mb-4 opacity-50"
                 />
-                <h3 className="text-xl font-semibold text-gray-600 mb-2">No Events Found</h3>
-                <p className="text-gray-500 mb-6">There are currently no community events available.</p>
-                <a
-                  href="/community-event/CreateEvent"
-                  onClick={handleCreateEventClick}
-                  className="bg-[#08326A] text-white px-6 py-3 rounded-lg hover:bg-[#0a3f85] transition inline-block"
-                >
-                  Create Your First Event
-                </a>
+                <h3 className="text-xl font-semibold text-gray-600 mb-2">No {filter} events found</h3>
+                <p className="text-gray-500 mb-6">
+                  {filter === 'active' && 'Try switching to another filter or create a new event.'}
+                  {filter === 'past' && 'No past events available yet.'}
+                  {filter === 'cancelled' && 'No cancelled events found.'}
+                </p>
+                {filter === 'active' && (
+                  <a
+                    href="/community-event/CreateEvent"
+                    onClick={handleCreateEventClick}
+                    className="bg-[#08326A] text-white px-6 py-3 rounded-lg hover:bg-[#0a3f85] transition inline-block"
+                  >
+                    Create Event
+                  </a>
+                )}
               </div>
             ) : (
-              events.map((event) => {
-                formatDate(event.date);
+              filteredEvents.map((event) => {
                 const displayTime = formatTime(event.eventTime) || event.time;
-                const isUpcoming = new Date(event.date) >= new Date();
                 const isPastDeadline = event.deadline ? new Date(event.deadline) < new Date() : false;
 
                 return (
                   <div
                     key={event.id}
                     className={`relative flex flex-col md:flex-row bg-white p-6 rounded-2xl shadow-lg w-full max-w-5xl hover:shadow-xl transition ${
-                      !isUpcoming ? 'opacity-75 bg-gray-50' : ''
+                      filter === 'past' ? 'opacity-75 bg-gray-50' : ''
+                    } ${
+                      filter === 'cancelled' ? 'opacity-75 bg-red-50' : ''
                     }`}
                   >
-                    {/* Event Status Badge */}
-                    {!isUpcoming && (
+                    {/* Status Badge */}
+                    {filter === 'past' && (
                       <div className="absolute top-4 right-4 bg-gray-500 text-white px-3 py-1 rounded-full text-xs font-medium">
                         Past Event
                       </div>
                     )}
-                    {isPastDeadline && isUpcoming && (
-                      <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-full text-xs font-medium">
+                    {filter === 'cancelled' && (
+                      <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1 rounded-full text-xs font-medium">
+                        Cancelled
+                      </div>
+                    )}
+                    {isPastDeadline && filter === 'active' && (
+                      <div className="absolute top-4 right-4 bg-yellow-600 text-white px-3 py-1 rounded-full text-xs font-medium">
                         Registration Closed
                       </div>
                     )}
 
-                    {/* Event Image */}
+                    {/* Image */}
                     <div className="w-full md:w-72 h-65 rounded-xl overflow-hidden flex-shrink-0 mb-4 md:mb-0 md:mr-6">
                       <Image
                         src={event.image}
@@ -269,7 +323,7 @@ export default function CommunityEventPage() {
                       />
                     </div>
 
-                    {/* Event Info */}
+                    {/* Info */}
                     <div className="flex-1 flex flex-col justify-between">
                       <div>
                         <h2 className="text-2xl font-bold text-[#08326A]">{event.title}</h2>
@@ -300,7 +354,6 @@ export default function CommunityEventPage() {
                           )}
                         </div>
 
-                        {/* Youth Classifications Tags */}
                         {event.tags && event.tags.length > 0 && (
                           <div className="mt-3">
                             <p className="text-xs text-gray-600 mb-2">Target Youth Classifications:</p>
@@ -319,21 +372,28 @@ export default function CommunityEventPage() {
                           </div>
                         )}
 
-                        {/* Registration Deadline */}
-                        {event.deadline && (
-                          <div className="mt-2">
-                            <p className="text-xs text-gray-600">
-                              Registration Deadline:{' '}
-                              <span className={isPastDeadline ? 'text-red-600 font-medium' : 'text-gray-800'}>
-                                {new Date(event.deadline).toLocaleDateString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                  year: 'numeric',
-                                })}
-                              </span>
-                            </p>
-                          </div>
-                        )}
+                        {event.deadline ? (
+                          new Date(event.deadline) <= new Date(event.date) ? (
+                            <div className="mt-2">
+                              <p className="text-xs text-gray-600">
+                                Registration Deadline:{' '}
+                                <span className={isPastDeadline ? 'text-red-600 font-medium' : 'text-gray-800'}>
+                                  {new Date(event.deadline).toLocaleDateString('en-US', {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric',
+                                  })}
+                                </span>
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="mt-2">
+                              <p className="text-xs text-red-600 font-medium">
+                                Invalid registration deadline. It cannot be after the event date.
+                              </p>
+                            </div>
+                          )
+                        ) : null}
                       </div>
 
                       <div className="mt-6">
@@ -354,17 +414,19 @@ export default function CommunityEventPage() {
           </div>
         )}
 
-        {/* Floating Button */}
-        <div className="fixed bottom-8 right-8">
-          <a
-            href="/community-event/CreateEvent"
-            onClick={handleCreateEventClick}
-            aria-label="Create Event"
-            className="flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 bg-[#08326A] text-white rounded-full shadow-2xl border-4 border-white hover:bg-[#0a3f85] transition"
-          >
-            <Image src="/NewEvent.svg" alt="Create Event" width={32} height={32} />
-          </a>
-        </div>
+        {/* Floating Button - Only show when there are events */}
+        {showFloatingButton && (
+          <div className="fixed bottom-8 right-8">
+            <a
+              href="/community-event/CreateEvent"
+              onClick={handleCreateEventClick}
+              aria-label="Create Event"
+              className="flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 bg-[#08326A] text-white rounded-full shadow-2xl border-4 border-white hover:bg-[#0a3f85] transition"
+            >
+              <Image src="/NewEvent.svg" alt="Create Event" width={32} height={32} />
+            </a>
+          </div>
+        )}
       </div>
 
       <Navbar />

@@ -1,9 +1,9 @@
- 'use client';
+'use client';
 
 import { useState, FormEvent } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { db } from '@/app/Firebase/firebase';
+import { app, db } from '@/app/Firebase/firebase';
 import { getAuth, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 
@@ -14,7 +14,7 @@ type FormFields = {
 
 export default function MarikinaLogin() {
   const router = useRouter();
-  const auth = getAuth();
+  const auth = getAuth(app);
 
   const [formData, setFormData] = useState<FormFields>({
     email: '',
@@ -42,15 +42,19 @@ export default function MarikinaLogin() {
     }
 
     try {
+      // ✅ Trim whitespace from inputs
+      const trimmedEmail = email.toLowerCase().trim();
+      const trimmedPassword = password.trim();
+
       // ✅ Force email to be skcentralsystem@gmail.com
-      if (email.toLowerCase().trim() !== "skcentralsystem@gmail.com") {
+      if (trimmedEmail !== "skcentralsystem@gmail.com") {
         setError("Only IT Admin can log in with this account.");
         setLoading(false);
         return;
       }
 
       // ✅ Firebase Auth login
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, trimmedEmail, trimmedPassword);
       const user = userCredential.user;
 
       // ✅ Store login info in Firestore

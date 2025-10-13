@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import AreaChartComponent from '../Components/AreaChart';
+// Removed import AreaChartComponent from '../Components/AreaChart';
 import BarChartComponent from '../Components/BarChart';
 import Navbar from "../Components/Navbar";
 import RequireAuth from "@/app/Components/RequireAuth";
@@ -88,7 +88,7 @@ const YouthInsightsDashboard: React.FC = () => {
             details: "User accessed the Youth Insights Dashboard page",
             userId: currentUser.uid,
             userEmail: currentUser.email || undefined,
-            category: "user", // Changed to admin since this is an admin dashboard
+            category: "user",
           });
           
           console.log('✅ Activity log recorded successfully for Youth Insights Dashboard'); // Success log
@@ -320,8 +320,8 @@ const YouthInsightsDashboard: React.FC = () => {
     youthClassificationChartData,
     civilStatusChartData,
     workLevelChartData,
-    youthCountByYearChartData,
   } = processedData;
+  const totalYouthCount = filteredYouthData.length;
 
   if (loading) {
     return (
@@ -435,16 +435,14 @@ const YouthInsightsDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Youth Count (Filtered) Area Graph */}
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <h3 className="text-xl font-semibold text-gray-700 mb-4">Youth Count by Registration Year (Filtered)</h3>
-          <div className="flex justify-center">
-            <AreaChartComponent data={youthCountByYearChartData} />
-          </div>
-        </div>
 
         {/* Metrics Section */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 mb-4">
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <h3 className="text-lg font-semibold text-gray-700">Total Youth (Filtered)</h3>
+            <p className="text-5xl font-bold text-gray-800">{totalYouthCount}</p>
+            <p className="text-sm text-gray-500 mt-2">Total number of matching youth</p>
+          </div>
           <div className="bg-white rounded-xl shadow-lg p-6">
             <h3 className="text-lg font-semibold text-gray-700">Average Age (Filtered)</h3>
             <p className="text-5xl font-bold text-gray-800">{averageAge}</p>

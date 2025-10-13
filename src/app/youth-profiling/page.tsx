@@ -34,13 +34,14 @@ type Member = {
 export default function ApprovedUsersTable() {
   const [members, setMembers] = useState<Member[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [barangayFilter, setBarangayFilter] = useState("all");
+  const [userBarangay, setUserBarangay] = useState<string>("");
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" }>({
     key: "firstName",
     direction: "asc",
   });
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
-  const [] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   
   const auth = getAuth();
@@ -49,6 +50,25 @@ export default function ApprovedUsersTable() {
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
+
+        // Fetch user's barangay from adminUsers collection
+        try {
+          const adminUsersRef = collection(db, 'adminUsers');
+          const q = query(adminUsersRef, where('uid', '==', currentUser.uid));
+          const querySnapshot = await getDocs(q);
+          
+          if (!querySnapshot.empty) {
+            const adminData = querySnapshot.docs[0].data();
+            const assignedBarangay = adminData.barangay || "";
+            setUserBarangay(assignedBarangay);
+            // Set default filter to user's barangay if they have one
+            if (assignedBarangay) {
+              setBarangayFilter(assignedBarangay);
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching user barangay:', error);
+        }
 
         // Log page access with specific page name
         await recordActivityLog({
@@ -131,9 +151,6 @@ export default function ApprovedUsersTable() {
             approvedBy,
             approvedByUID,
             approvedAt: data.approvedAt || null,
-            // Add fields from member approval process
-            tempPassword: data.tempPassword || "", // Show if temp password was generated
-            uid: data.uid || "", // Reference to original application
           };
         })
       );
@@ -207,6 +224,21 @@ export default function ApprovedUsersTable() {
     }
   };
 
+  const handleBarangayFilter = async (barangay: string) => {
+    setBarangayFilter(barangay);
+
+    // Log filter action
+    if (user) {
+      await recordActivityLog({
+        action: 'Filter Users by Barangay',
+        details: `Filtered approved users by barangay: ${barangay === 'all' ? 'All Barangays' : barangay}`,
+        userId: user.uid,
+        userEmail: user.email || undefined,
+        category: 'user'
+      });
+    }
+  };
+
   const sortedMembers = [...members].sort((a, b) => {
     const aValue = a[sortConfig.key as keyof Member] || "";
     const bValue = b[sortConfig.key as keyof Member] || "";
@@ -215,7 +247,13 @@ export default function ApprovedUsersTable() {
     return 0;
   });
 
-  const filteredMembers = sortedMembers.filter(
+  // Apply barangay filter first, then search filter
+  const barangayFilteredMembers = sortedMembers.filter((member) => {
+    if (barangayFilter === "all") return true;
+    return member.barangay === barangayFilter;
+  });
+
+  const filteredMembers = barangayFilteredMembers.filter(
     (member) =>
       member.firstName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.lastName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -223,6 +261,9 @@ export default function ApprovedUsersTable() {
       member.barangay.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.approvedBy.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Get unique barangays for the filter dropdown
+  const uniqueBarangays = Array.from(new Set(members.map(m => m.barangay))).sort();
 
   const handleDownload = async () => {
     setIsDownloading(true);
@@ -274,7 +315,10 @@ export default function ApprovedUsersTable() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `approved_users_${new Date().toISOString().split('T')[0]}.csv`;
+      const fileName = barangayFilter === "all" 
+        ? `approved_users_all_barangays_${new Date().toISOString().split('T')[0]}.csv`
+        : `approved_users_${barangayFilter}_${new Date().toISOString().split('T')[0]}.csv`;
+      a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
 
@@ -282,7 +326,7 @@ export default function ApprovedUsersTable() {
       if (user) {
         await recordActivityLog({
           action: 'Download Users CSV',
-          details: `Downloaded CSV file with ${filteredMembers.length} approved users`,
+          details: `Downloaded CSV file with ${filteredMembers.length} approved users (Barangay: ${barangayFilter})`,
           userId: user.uid,
           userEmail: user.email || undefined,
           category: 'user'
@@ -326,9 +370,9 @@ export default function ApprovedUsersTable() {
         {/* Header */}
         <div className="flex justify-between items-start mb-6">
           <div>
-            <h1 className="text-3xl font-semibold text-gray-800">Approved Users</h1>
+            <h1 className="text-3xl font-semibold text-gray-800">Youth Profiling</h1>
             <p className="text-lg text-gray-600 mt-1">
-              List of all users who have been approved ({filteredMembers.length} total)
+              List of all SK constituents ({filteredMembers.length} total)
             </p>
           </div>
         </div>
@@ -349,24 +393,21 @@ export default function ApprovedUsersTable() {
               </div>
             </div>
             <div className="flex gap-4">
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  if (user) {
-                    recordActivityLog({
-                      action: 'Clear Search',
-                      details: 'Cleared search filters in approved users table',
-                      userId: user.uid,
-                      userEmail: user.email || undefined,
-                      category: 'user'
-                    });
-                  }
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 transition text-sm"
-                disabled={!searchQuery}
+              <select
+                value={barangayFilter}
+                onChange={(e) => handleBarangayFilter(e.target.value)}
+                className="border border-gray-300 rounded px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#1167B1] bg-white"
               >
-                Clear
-              </button>
+                <option value="all">All Youth Constituents</option>
+                {userBarangay && (
+                  <option value={userBarangay}>My Barangay ({userBarangay})</option>
+                )}
+                {uniqueBarangays.filter(b => b !== userBarangay).map((barangay) => (
+                  <option key={barangay} value={barangay}>
+                    {barangay}
+                  </option>
+                ))}
+              </select>
               <button
                 onClick={handleDownload}
                 disabled={isDownloading}
@@ -444,7 +485,9 @@ export default function ApprovedUsersTable() {
                   {filteredMembers.length === 0 ? (
                     <tr>
                       <td colSpan={18} className="px-4 py-8 text-center text-gray-500">
-                        {searchQuery ? `No users found matching "${searchQuery}"` : "No approved users found"}
+                        {searchQuery ? `No users found matching "${searchQuery}"` : 
+                         barangayFilter !== "all" ? `No approved users found in ${barangayFilter}` :
+                         "No approved users found"}
                       </td>
                     </tr>
                   ) : (
@@ -543,9 +586,13 @@ export default function ApprovedUsersTable() {
                 </div>
                 <div className="text-center">
                   <span className="font-semibold text-[#1167B1]">
-                    {new Set(members.map(m => m.barangay)).size}
+                    {barangayFilter === "all" 
+                      ? new Set(members.map(m => m.barangay)).size
+                      : 1}
                   </span>
-                  <p className="text-gray-600">Unique Barangays</p>
+                  <p className="text-gray-600">
+                    {barangayFilter === "all" ? "Unique Barangays" : "Selected Barangay"}
+                  </p>
                 </div>
               </div>
             </div>

@@ -558,17 +558,15 @@ function AnnouncementsGrid({
           className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow cursor-pointer border"
           onClick={() => onAnnouncementClick(announcement)}
         >
-          {announcement.imageUrl && (
-            <div className="relative h-48 w-full">
-              <Image
-                src={announcement.imageUrl}
-                alt={announcement.title}
-                fill
-                className="object-cover"
-                sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 25vw"
-              />
-            </div>
-          )}
+          <div className="relative h-48 w-full">
+            <Image
+              src={announcement.imageUrl || '/defaultpicture.png'}
+              alt={announcement.title}
+              fill
+              className="object-cover"
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 25vw"
+            />
+          </div>
           <div className="p-4">
             <h3 className="font-semibold text-lg text-black mb-2 line-clamp-2">{announcement.title}</h3>
             <p className="text-gray-600 text-sm line-clamp-3">{announcement.description}</p>
@@ -576,13 +574,10 @@ function AnnouncementsGrid({
               <span className="text-xs text-gray-500">
                 {announcement.createdAt.toDate().toLocaleDateString()}
               </span>
-              <div className="flex items-center space-x-2">
-                {(announcement.archived || announcement.isArchived) && (
-                  <span className="bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full">Archived</span>
-                )}
+                <div className="flex items-center space-x-2 ml-4">
                 {announcement.endDate && (
                   <span className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
-                    Until {new Date(announcement.endDate).toLocaleDateString()}
+                  Until {new Date(announcement.endDate).toLocaleDateString()}
                   </span>
                 )}
                 <button

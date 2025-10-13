@@ -20,6 +20,7 @@ import Navbar from "@/app/Components/Navbar";
 import RequireAuth from "@/app/Components/RequireAuth";
 import { recordActivityLog } from "@/app/Components/recordActivityLog";
 import { getAuth, User } from "firebase/auth";
+import Link from "next/link";
 
 interface EventData {
   id: string;
@@ -114,7 +115,7 @@ function ManageEventContent() {
             time: data.time || "",
             eventTime: data.eventTime || "",
             location: data.location || "",
-            image: data.image || "/placeholder.png",
+            image: data.image || "/defaultpicture.png",
             capacity: data.capacity || "",
             deadline: data.deadline || "",
             tags: data.tags || [],
@@ -314,6 +315,48 @@ function ManageEventContent() {
     }
   };
 
+const handleCancelEvent = async () => {
+    if (!selectedEvent || !authUser) return;
+
+    const confirmCancel = confirm(`Are you sure you want to cancel the event: "${selectedEvent.title}"?`);
+    if (!confirmCancel) return;
+
+    try {
+      const eventRef = doc(db, "events", selectedEvent.id);
+      await updateDoc(eventRef, {
+        status: "cancelled",
+        cancelled: true,
+        updatedBy: authUser.uid,
+      });
+
+      await recordActivityLog({
+        action: "Cancel Event",
+        details: `Cancelled event: ${selectedEvent.title}`,
+        userId: authUser.uid,
+        userEmail: authUser.email || undefined,
+        category: "events",
+      });
+
+      alert("Event cancelled successfully!");
+      
+      // Update local state to reflect cancellation
+      setSelectedEvent({ ...selectedEvent, status: "Cancelled" } as EventData);
+    } catch (error) {
+      console.error("Error cancelling event:", error);
+
+      await recordActivityLog({
+        action: "Cancel Event Error",
+        details: `Failed to cancel event: ${selectedEvent.title} - ${error}`,
+        userId: authUser.uid,
+        userEmail: authUser.email || undefined,
+        category: "events",
+        severity: "medium",
+      });
+
+      alert("Failed to cancel event. Please try again.");
+    }
+  };
+  
   const handleEditChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (!editForm) return;
     const { name, value } = e.target;
@@ -433,13 +476,26 @@ function ManageEventContent() {
 
   return (
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] flex flex-col gap-8 overflow-auto">
-              {/* Header */}
-        <header className="mb-0">
-          <h1 className="text-3xl font-bold text-[#08326A]">Community Events</h1>
+      {/* Header */}
+      <header className="mb-6">
+      <Link href="/community-event">
+        <div className="cursor-pointer flex flex-col">
+          <div className="flex items-center space-x-2">
+        <Image
+          src="/ArrowBackIcon.svg"
+          alt="Arrow Back"
+          width={24}
+          height={24}
+          style={{ fill: '#11459B' }}
+        />
+        <h1 className="text-3xl font-semibold text-gray-800">Community Event</h1>
+          </div>
           <p className="text-lg text-gray-600 mt-2">
-            The hub that connects kabataan with events and activities led by the SK Federation.
+        The hub that connects kabataan with events and activities led by the SK Federation.
           </p>
-        </header>
+        </div>
+      </Link>
+      </header>
       <Navbar />
 
       {loadingEvent && (
@@ -566,12 +622,18 @@ function ManageEventContent() {
                 </div>
               </div>
 
-              <div className="mt-6">
+              <div className="mt-6 flex gap-4">
                 <button
                   onClick={handleEditClick}
                   className="bg-[#1167B1] text-white px-5 py-2 rounded-lg hover:bg-[#0a4c8c] transition"
                 >
                   Edit Event
+                </button>
+                <button
+                  onClick={handleCancelEvent}
+                  className="bg-red-600 text-white px-5 py-2 rounded-lg hover:bg-red-700 transition"
+                >
+                  Cancel Event
                 </button>
               </div>
             </div>
@@ -690,14 +752,18 @@ function ManageEventContent() {
                 </div>
 
                 <div className="mt-3 w-full">
-                  <label className="block text-[#0A2F7A] font-medium mb-1">
+                  <label
+                    htmlFor="file-upload"
+                    className="block w-full p-4 border rounded-lg bg-white text-center text-[#0A2F7A] font-medium cursor-pointer hover:bg-gray-100"
+                  >
                     Choose New Picture (optional)
                   </label>
                   <input
+                    id="file-upload"
                     type="file"
                     accept="image/*"
                     onChange={handleImageChange}
-                    className="w-full p-2 border rounded-lg bg-white"
+                    className="hidden"
                   />
                   {newImageFile && (
                     <p className="text-sm text-green-600 mt-1">

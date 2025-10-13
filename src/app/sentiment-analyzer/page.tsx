@@ -22,6 +22,16 @@ interface FeedbackItem {
   timestamp?: Timestamp;
   overallSentiment?: string;
   analyzedResponses?: Record<string, { answer: string; sentiment: string; rating?: number }>;
+  sentimentMatch?: boolean;
+}
+
+interface AccuracyMetrics {
+  TP: number; // True Positive: Positive sentiment matches positive rating (>=4)
+  TN: number; // True Negative: Negative sentiment matches negative rating (<=2)
+  FP: number; // False Positive: Positive sentiment but negative rating
+  FN: number; // False Negative: Negative sentiment but positive rating
+  accuracy: number;
+  totalValidated: number;
 }
 
 interface CompiledEvent {
@@ -35,6 +45,9 @@ interface CompiledEvent {
   averageRatings: Record<string, number>;
   overallRating: number;
   answers?: string[];
+  accuracyMetrics?: AccuracyMetrics;
+  matchingFeedbacks: number;
+  mismatchingFeedbacks: number;
 }
 
 const SentimentAnalyzer: React.FC = () => {
@@ -46,12 +59,62 @@ const SentimentAnalyzer: React.FC = () => {
   const [userDocId, setUserDocId] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sortField, setSortField] = useState<'name' | 'count' | 'rating' | 'sentiment'>('name');
+  const [sortField, setSortField] = useState<'name' | 'count' | 'rating' | 'sentiment' | 'accuracy'>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
   const sentiment = useMemo(() => new Sentiment(), []);
   const auth = getAuth();
-  // fetchData must be declared before useEffect to avoid TDZ error
+
+  // Function to determine sentiment from rating
+  const getSentimentFromRating = (rating: number): string => {
+    if (rating >= 4) return "Positive";
+    if (rating <= 2) return "Negative";
+    return "Neutral";
+  };
+
+  // Function to determine sentiment from comment
+  const getSentimentFromComment = useCallback((comment: string): string => {
+    const score = sentiment.analyze(comment).score;
+    if (score > 0) return "Positive";
+    if (score < 0) return "Negative";
+    return "Neutral";
+  }, [sentiment]);
+
+  // Function to calculate accuracy metrics
+  const calculateAccuracy = useCallback((feedbacks: FeedbackItem[]): AccuracyMetrics => {
+    let TP = 0, TN = 0, FP = 0, FN = 0;
+
+    feedbacks.forEach((feedback) => {
+      if (feedback.comments && feedback.ratings) {
+        const commentSentiment = getSentimentFromComment(feedback.comments);
+        // Get average rating for this feedback
+        const ratings = Object.values(feedback.ratings);
+        if (ratings.length > 0) {
+          const avgRating = ratings.reduce((sum, r) => sum + r, 0) / ratings.length;
+          const ratingSentiment = getSentimentFromRating(avgRating);
+
+          // Skip neutral sentiments for accuracy calculation
+          if (commentSentiment !== "Neutral" && ratingSentiment !== "Neutral") {
+            if (commentSentiment === "Positive" && ratingSentiment === "Positive") {
+              TP++; // True Positive
+            } else if (commentSentiment === "Negative" && ratingSentiment === "Negative") {
+              TN++; // True Negative
+            } else if (commentSentiment === "Positive" && ratingSentiment === "Negative") {
+              FP++; // False Positive
+            } else if (commentSentiment === "Negative" && ratingSentiment === "Positive") {
+              FN++; // False Negative
+            }
+          }
+        }
+      }
+    });
+
+    const totalValidated = TP + TN + FP + FN;
+    const accuracy = totalValidated > 0 ? ((TP + TN) / totalValidated) * 100 : 0;
+
+    return { TP, TN, FP, FN, accuracy, totalValidated };
+  }, [getSentimentFromComment]);
+
   const fetchData = useCallback(async (currentUser?: User) => {
     const activeUser = currentUser || user;
     if (!activeUser) return;
@@ -59,7 +122,7 @@ const SentimentAnalyzer: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      // Log data fetch attempt
+      
       await recordActivityLog({
         action: 'Fetch Sentiment Data',
         details: 'User initiated sentiment data fetch',
@@ -67,51 +130,68 @@ const SentimentAnalyzer: React.FC = () => {
         userEmail: activeUser.email || undefined,
         category: 'user'
       });
+
       const querySnapshot = await getDocs(collection(db, "UserFeedback"));
       const fetchedData = querySnapshot.docs.map((doc) => ({
         feedbackId: doc.id,
         ...doc.data(),
       })) as FeedbackItem[];
+
       // Analyze each feedback
       const analyzedData = fetchedData.map((item) => {
         const analyzedResponses: Record<string, { answer: string; sentiment: string; rating?: number }> = {};
         let overallScore = 0;
         let textCount = 0;
+        let commentSentiment: string | null = null;
+        let averageRating = 0;
+        let ratingCount = 0;
+
         // Analyze comments if available
         if (item.comments && item.comments.trim()) {
+          commentSentiment = getSentimentFromComment(item.comments);
           const score = sentiment.analyze(item.comments).score;
-          let label = "Neutral";
-          if (score > 0) label = "Positive";
-          if (score < 0) label = "Negative";
-          analyzedResponses["Comments"] = { answer: item.comments, sentiment: label };
+          analyzedResponses["Comments"] = { answer: item.comments, sentiment: commentSentiment };
           overallScore += score;
           textCount += 1;
         }
-        // Process ratings and convert to sentiment-like responses
+
+        // Process ratings
         if (item.ratings) {
           Object.entries(item.ratings).forEach(([category, rating]) => {
             let ratingText = "";
-            let ratingSentiment = "Neutral";
+            const ratingSentiment = getSentimentFromRating(rating);
+            
             if (rating >= 4) {
               ratingText = `Excellent (${rating}/5)`;
-              ratingSentiment = "Positive";
               overallScore += 1;
             } else if (rating >= 3) {
               ratingText = `Good (${rating}/5)`;
-              ratingSentiment = "Neutral";
             } else {
               ratingText = `Needs Improvement (${rating}/5)`;
-              ratingSentiment = "Negative";
               overallScore -= 1;
             }
+
             analyzedResponses[category.charAt(0).toUpperCase() + category.slice(1)] = { 
               answer: ratingText, 
               sentiment: ratingSentiment,
               rating: rating 
             };
             textCount += 1;
+            averageRating += rating;
+            ratingCount += 1;
           });
         }
+
+        // Check if sentiment matches rating
+        let sentimentMatch = true;
+        if (commentSentiment && ratingCount > 0) {
+          averageRating = averageRating / ratingCount;
+          const ratingSentiment = getSentimentFromRating(averageRating);
+          sentimentMatch = commentSentiment === ratingSentiment || 
+                          commentSentiment === "Neutral" || 
+                          ratingSentiment === "Neutral";
+        }
+
         // Calculate overall sentiment
         let overallSentiment = "Neutral";
         if (textCount > 0) {
@@ -119,13 +199,16 @@ const SentimentAnalyzer: React.FC = () => {
           if (averageScore > 0.3) overallSentiment = "Positive";
           else if (averageScore < -0.3) overallSentiment = "Negative";
         }
-        return { ...item, analyzedResponses, overallSentiment };
+
+        return { ...item, analyzedResponses, overallSentiment, sentimentMatch };
       });
+
       // Group by event
       const eventMap: Record<string, CompiledEvent> = {};
       analyzedData.forEach((item) => {
         const eventKey = item.eventId || item.eventName;
         if (!eventKey) return;
+
         if (!eventMap[eventKey]) {
           eventMap[eventKey] = {
             eventName: item.eventName || "Unnamed Event",
@@ -137,26 +220,40 @@ const SentimentAnalyzer: React.FC = () => {
             feedbackCount: 0,
             averageRatings: {},
             overallRating: 0,
+            matchingFeedbacks: 0,
+            mismatchingFeedbacks: 0,
           };
         }
+
         const event = eventMap[eventKey];
         event.feedbacks.push(item);
         event.feedbackCount += 1;
+
+        // Track matching/mismatching feedbacks
+        if (item.sentimentMatch) {
+          event.matchingFeedbacks += 1;
+        } else {
+          event.mismatchingFeedbacks += 1;
+        }
+
         // Compile responses and ratings per question/category
         for (const [category, data] of Object.entries(item.analyzedResponses || {})) {
           if (!event.compiledResponses[category]) event.compiledResponses[category] = [];
           event.compiledResponses[category].push(data.answer);
+
           if (data.rating !== undefined) {
             if (!event.compiledRatings[category]) event.compiledRatings[category] = [];
             event.compiledRatings[category].push(data.rating);
           }
         }
       });
-      // Calculate overall sentiment and average ratings per event
+
+      // Calculate overall sentiment, ratings, and accuracy per event
       Object.values(eventMap).forEach((event) => {
         let totalScore = 0;
         let totalRating = 0;
         let ratingCount = 0;
+
         // Calculate average ratings for each category
         Object.entries(event.compiledRatings).forEach(([category, ratings]) => {
           if (ratings.length > 0) {
@@ -166,10 +263,12 @@ const SentimentAnalyzer: React.FC = () => {
             ratingCount += 1;
           }
         });
+
         // Calculate overall rating
         if (ratingCount > 0) {
           event.overallRating = Math.round((totalRating / ratingCount) * 10) / 10;
         }
+
         // Calculate sentiment from comments and ratings
         event.feedbacks.forEach((fb) => {
           if (fb.comments) {
@@ -185,14 +284,29 @@ const SentimentAnalyzer: React.FC = () => {
             }
           }
         });
-        // Determine overall sentiment
-        if (totalScore > 0) event.overallSentiment = "Positive";
-        else if (totalScore < 0) event.overallSentiment = "Negative";
-        else event.overallSentiment = "Neutral";
+
+        // Determine overall sentiment based on ratings
+        const overallRating = event.overallRating;
+        if (overallRating >= 4) {
+          event.overallSentiment = "Positive";
+        } else if (overallRating <= 2) {
+          event.overallSentiment = "Negative";
+        } else if (overallRating > 2 && overallRating < 4) {
+          event.overallSentiment = "Neutral";
+        } else {
+          // Fallback to score-based sentiment if no ratings
+          if (totalScore > 0) event.overallSentiment = "Positive";
+          else if (totalScore < 0) event.overallSentiment = "Negative";
+          else event.overallSentiment = "Neutral";
+        }
+
+        // Calculate accuracy metrics
+        event.accuracyMetrics = calculateAccuracy(event.feedbacks);
       });
+
       const compiledEvents = Object.values(eventMap);
       setCompiledData(compiledEvents);
-      // Log successful analysis
+
       await recordActivityLog({
         action: 'Analyze Sentiment - Success',
         details: `Successfully analyzed ${fetchedData.length} feedbacks across ${compiledEvents.length} events`,
@@ -200,7 +314,7 @@ const SentimentAnalyzer: React.FC = () => {
         userEmail: activeUser.email || undefined,
         category: 'user'
       });
-      // Create success notification
+
       if (userDocId) {
         try {
           await addDoc(collection(db, "notifications"), {
@@ -217,7 +331,7 @@ const SentimentAnalyzer: React.FC = () => {
     } catch (error) {
       console.error("Error fetching data from Firestore:", error);
       setError(`Failed to load feedback data: ${error instanceof Error ? error.message : String(error)}`);
-      // Log error
+      
       await recordActivityLog({
         action: 'Sentiment Analysis Error',
         details: `Failed to analyze sentiment data: ${error instanceof Error ? error.message : String(error)}`,
@@ -226,7 +340,7 @@ const SentimentAnalyzer: React.FC = () => {
         category: 'user',
         severity: 'medium'
       });
-      // Create error notification
+
       if (userDocId) {
         try {
           await addDoc(collection(db, "notifications"), {
@@ -243,13 +357,7 @@ const SentimentAnalyzer: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [sentiment, user, userDocId]);
-  
-  
-
-
-  // fetchData must be declared before useEffect to avoid TDZ error
-
+  }, [calculateAccuracy, getSentimentFromComment, sentiment, user, userDocId]);
 
   // Initialize user and fetch data
   useEffect(() => {
@@ -261,7 +369,6 @@ const SentimentAnalyzer: React.FC = () => {
       if (currentUser) {
         setUser(currentUser);
 
-        // Log page access with enhanced debugging
         try {
           console.log("🔄 Attempting to log page access...");
           await recordActivityLog({
@@ -276,7 +383,6 @@ const SentimentAnalyzer: React.FC = () => {
           console.error("❌ Error logging page access:", error);
         }
 
-        // Get user document ID for notifications
         try {
           const adminUsersRef = collection(db, "adminUsers");
           const q = query(adminUsersRef, where("uid", "==", currentUser.uid));
@@ -303,14 +409,11 @@ const SentimentAnalyzer: React.FC = () => {
     return () => unsubscribe();
   }, [auth, fetchData]);
 
-
-
   const handleDownload = async (event: CompiledEvent, format: "pdf" | "csv" = "pdf") => {
     if (!user) return;
     
     setIsDownloading(event.eventName);
 
-    // Log download attempt
     try {
       await recordActivityLog({
         action: `Download ${format.toUpperCase()} - Attempt`,
@@ -335,6 +438,13 @@ const SentimentAnalyzer: React.FC = () => {
         doc.text(`Feedback Count: ${event.feedbackCount}`, 14, 46);
         doc.text(`Overall Sentiment: ${event.overallSentiment}`, 14, 54);
         doc.text(`Overall Rating: ${event.overallRating}/5`, 14, 62);
+        
+        // Add accuracy metrics
+        if (event.accuracyMetrics) {
+          doc.text(`Accuracy: ${event.accuracyMetrics.accuracy.toFixed(2)}%`, 14, 70);
+          doc.text(`Matching Feedbacks: ${event.matchingFeedbacks}`, 14, 78);
+          doc.text(`Mismatching Feedbacks: ${event.mismatchingFeedbacks}`, 14, 86);
+        }
 
         const tableData: (string | number)[][] = [];
         
@@ -347,22 +457,18 @@ const SentimentAnalyzer: React.FC = () => {
         Object.entries(event.compiledResponses).forEach(([category, responses]) => {
           if (category === "Comments") {
             responses.forEach((response) => {
-              const score = sentiment.analyze(response).score;
-              let label = "Neutral";
-              if (score > 0) label = "Positive";
-              if (score < 0) label = "Negative";
+              const commentSentiment = getSentimentFromComment(response);
               const truncatedResponse = response.length > 100 
                 ? response.substring(0, 97) + "..." 
                 : response;
-              tableData.push([category, truncatedResponse, label]);
+              tableData.push([category, truncatedResponse, commentSentiment]);
             });
           }
         });
 
-        // Use autoTable properly
         if (tableData.length > 0) {
           autoTable(doc, {
-            startY: 70,
+            startY: 94,
             head: [["Category", "Response/Rating", "Sentiment/Type"]],
             body: tableData,
             styles: { fontSize: 9, cellPadding: 2 },
@@ -376,7 +482,6 @@ const SentimentAnalyzer: React.FC = () => {
         const fileName = `feedback_${event.eventName.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split("T")[0]}.pdf`;
         doc.save(fileName);
 
-        // Log successful PDF download
         await recordActivityLog({
           action: 'Download PDF - Success',
           details: `Successfully downloaded PDF report for event: ${event.eventName}`,
@@ -386,36 +491,39 @@ const SentimentAnalyzer: React.FC = () => {
         });
 
       } else {
-
-      // CSV download
-      let csvContent = "Category,Response/Rating,Sentiment/Type,Feedback ID,User ID,Timestamp\n";
-  // let csvRowCount = 0; // Removed: not used
-      event.feedbacks.forEach((fb) => {
-        // Add ratings
-        if (fb.ratings) {
-          Object.entries(fb.ratings).forEach(([category, rating]) => {
-            let sentimentLabel = "Neutral";
-            if (rating >= 4) sentimentLabel = "Positive";
-            else if (rating <= 2) sentimentLabel = "Negative";
-            
-            const timestamp = fb.timestamp?.toDate?.()?.toLocaleString() || 'N/A';
-            csvContent += `"${category}","${rating}/5","Rating - ${sentimentLabel}","${fb.feedbackId}","${fb.userId}","${timestamp}"\n`;
-
-          });
-        }
-        // Add comments
-        if (fb.comments) {
-          const score = sentiment.analyze(fb.comments).score;
-          let label = "Neutral";
-          if (score > 0) label = "Positive";
-          if (score < 0) label = "Negative";
-          
+        // CSV download
+        let csvContent = "Category,Response/Rating,Sentiment/Type,Match,Feedback ID,User ID,Timestamp\n";
+        
+        event.feedbacks.forEach((fb) => {
           const timestamp = fb.timestamp?.toDate?.()?.toLocaleString() || 'N/A';
-          const escapedComment = fb.comments.replace(/"/g, '""');
-          csvContent += `"Comments","${escapedComment}","${label}","${fb.feedbackId}","${fb.userId}","${timestamp}"\n`;
+          const matchStatus = fb.sentimentMatch ? 'Yes' : 'No';
 
+          // Add ratings
+          if (fb.ratings) {
+            Object.entries(fb.ratings).forEach(([category, rating]) => {
+              const ratingSentiment = getSentimentFromRating(rating);
+              csvContent += `"${category}","${rating}/5","Rating - ${ratingSentiment}","${matchStatus}","${fb.feedbackId}","${fb.userId}","${timestamp}"\n`;
+            });
+          }
+
+          // Add comments
+          if (fb.comments) {
+            const commentSentiment = getSentimentFromComment(fb.comments);
+            const escapedComment = fb.comments.replace(/"/g, '""');
+            csvContent += `"Comments","${escapedComment}","${commentSentiment}","${matchStatus}","${fb.feedbackId}","${fb.userId}","${timestamp}"\n`;
+          }
+        });
+
+        // Add accuracy summary
+        if (event.accuracyMetrics) {
+          csvContent += `\nAccuracy Metrics\n`;
+          csvContent += `True Positives (TP),${event.accuracyMetrics.TP}\n`;
+          csvContent += `True Negatives (TN),${event.accuracyMetrics.TN}\n`;
+          csvContent += `False Positives (FP),${event.accuracyMetrics.FP}\n`;
+          csvContent += `False Negatives (FN),${event.accuracyMetrics.FN}\n`;
+          csvContent += `Accuracy,${event.accuracyMetrics.accuracy.toFixed(2)}%\n`;
+          csvContent += `Total Validated,${event.accuracyMetrics.totalValidated}\n`;
         }
-      });
 
         const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
@@ -428,7 +536,6 @@ const SentimentAnalyzer: React.FC = () => {
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
 
-        // Log successful CSV download
         await recordActivityLog({
           action: 'Download CSV - Success',
           details: `Successfully downloaded CSV report for event: ${event.eventName}`,
@@ -438,7 +545,6 @@ const SentimentAnalyzer: React.FC = () => {
         });
       }
 
-      // Create success notification
       if (userDocId) {
         try {
           await addDoc(collection(db, "notifications"), {
@@ -456,7 +562,6 @@ const SentimentAnalyzer: React.FC = () => {
     } catch (error) {
       console.error("Error downloading report:", error);
 
-      // Log download error
       await recordActivityLog({
         action: `Download ${format.toUpperCase()} - Error`,
         details: `Failed to download ${format.toUpperCase()} report for event: ${event.eventName}`,
@@ -466,7 +571,6 @@ const SentimentAnalyzer: React.FC = () => {
         severity: 'medium'
       });
 
-      // Create error notification
       if (userDocId) {
         try {
           await addDoc(collection(db, "notifications"), {
@@ -488,7 +592,6 @@ const SentimentAnalyzer: React.FC = () => {
   const handleViewEvent = async (event: CompiledEvent) => {
     setSelectedEvent(event);
 
-    // Log view event action
     try {
       await recordActivityLog({
         action: 'View Event Details',
@@ -506,7 +609,6 @@ const SentimentAnalyzer: React.FC = () => {
     setSearchQuery(query);
     
     if (query && user) {
-      // Log search activity
       try {
         await recordActivityLog({
           action: 'Search Events',
@@ -521,12 +623,11 @@ const SentimentAnalyzer: React.FC = () => {
     }
   };
 
-  const handleSort = async (field: 'name' | 'count' | 'rating' | 'sentiment') => {
+  const handleSort = async (field: 'name' | 'count' | 'rating' | 'sentiment' | 'accuracy') => {
     const newDirection = sortField === field ? (sortDirection === 'asc' ? 'desc' : 'asc') : 'asc';
     setSortField(field);
     setSortDirection(newDirection);
 
-    // Log sort action
     if (user) {
       try {
         await recordActivityLog({
@@ -542,10 +643,8 @@ const SentimentAnalyzer: React.FC = () => {
     }
   };
 
-
   const handleCloseModal = async () => {
     if (selectedEvent && user) {
-      // Log modal close action
       try {
         await recordActivityLog({
           action: 'Close Event Details',
@@ -568,7 +667,6 @@ const SentimentAnalyzer: React.FC = () => {
       item.eventName.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
-    // Sort data
     filtered.sort((a, b) => {
       let comparison = 0;
       
@@ -586,6 +684,9 @@ const SentimentAnalyzer: React.FC = () => {
           const sentimentOrder = { 'Positive': 3, 'Neutral': 2, 'Negative': 1 };
           comparison = (sentimentOrder[a.overallSentiment as keyof typeof sentimentOrder] || 0) - 
                       (sentimentOrder[b.overallSentiment as keyof typeof sentimentOrder] || 0);
+          break;
+        case 'accuracy':
+          comparison = (a.accuracyMetrics?.accuracy || 0) - (b.accuracyMetrics?.accuracy || 0);
           break;
       }
       
@@ -607,15 +708,27 @@ const SentimentAnalyzer: React.FC = () => {
     return "bg-red-100 text-red-800";
   };
 
+  const getAccuracyColor = (accuracy: number) => {
+    if (accuracy >= 80) return "text-green-600";
+    if (accuracy >= 60) return "text-yellow-600";
+    return "text-red-600";
+  };
+
+  const getAccuracyBadgeColor = (accuracy: number) => {
+    if (accuracy >= 80) return "bg-green-100 text-green-800";
+    if (accuracy >= 60) return "bg-yellow-100 text-yellow-800";
+    return "bg-red-100 text-red-800";
+  };
+
   return (
     <RequireAuth>
       <div className="ml-[260px] min-h-screen p-8 bg-[#f5f9ff] overflow-auto">
         {/* Header */}
         <div className="flex justify-between items-start mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-[#1167B1]">Sentiment Analyzer</h1>
+            <h1 className="text-3xl font-bold text-[#1167B1]">Feedbacks</h1>
             <p className="text-lg text-gray-600 mt-1">
-              Analyze feedback sentiment and ratings across events ({processedData.length} events found)
+              View and Analyze feedback sentiment and ratings across events ({processedData.length} events found)
             </p>
           </div>
           
@@ -639,9 +752,6 @@ const SentimentAnalyzer: React.FC = () => {
               </svg>
             </div>
           </div>
-
-          {/* Buttons */}
-          {/* ...existing code... (removed Test Log and Refresh buttons) */}
         </div>
 
         {/* Error Message */}
@@ -715,13 +825,24 @@ const SentimentAnalyzer: React.FC = () => {
                       </svg>
                     </div>
                   </th>
+                  <th 
+                    className="px-6 py-3 text-center cursor-pointer hover:bg-[#0E5290] transition"
+                    onClick={() => handleSort('accuracy')}
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      Accuracy
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M5 12a1 1 0 102 0V6.414l1.293 1.293a1 1 0 001.414-1.414l-3-3a1 1 0 00-1.414 0l-3 3a1 1 0 001.414 1.414L5 6.414V12zM15 8a1 1 0 10-2 0v5.586l-1.293-1.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L15 13.586V8z"/>
+                      </svg>
+                    </div>
+                  </th>
                   <th className="px-6 py-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {processedData.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-gray-500">
+                    <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
                       {searchQuery ? `No events found matching "${searchQuery}"` : "No feedback data available"}
                     </td>
                   </tr>
@@ -759,6 +880,15 @@ const SentimentAnalyzer: React.FC = () => {
                         }`}>
                           {item.overallSentiment}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {item.accuracyMetrics && item.accuracyMetrics.totalValidated > 0 ? (
+                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getAccuracyBadgeColor(item.accuracyMetrics.accuracy)}`}>
+                            {item.accuracyMetrics.accuracy.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">N/A</span>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-center space-x-2">
                         <button
@@ -816,7 +946,7 @@ const SentimentAnalyzer: React.FC = () => {
 
               {/* Overall Summary */}
               <div className="mb-6 p-4 rounded-lg bg-[#eef6ff] border-l-4 border-[#1167B1]">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div>
                     <p className="font-medium text-gray-800">Overall Rating:</p>
                     <p className={`text-2xl font-bold ${getRatingColor(selectedEvent.overallRating || 0)}`}>
@@ -841,8 +971,62 @@ const SentimentAnalyzer: React.FC = () => {
                     <p className="font-medium text-gray-800">Total Feedbacks:</p>
                     <p className="text-xl font-semibold">{selectedEvent.feedbackCount}</p>
                   </div>
+                  <div>
+                    <p className="font-medium text-gray-800">Accuracy:</p>
+                    {selectedEvent.accuracyMetrics && selectedEvent.accuracyMetrics.totalValidated > 0 ? (
+                      <p className={`text-xl font-semibold ${getAccuracyColor(selectedEvent.accuracyMetrics.accuracy)}`}>
+                        {selectedEvent.accuracyMetrics.accuracy.toFixed(2)}%
+                      </p>
+                    ) : (
+                      <p className="text-xl font-semibold text-gray-400">N/A</p>
+                    )}
+                  </div>
                 </div>
               </div>
+
+              {/* Accuracy Metrics Details */}
+              {selectedEvent.accuracyMetrics && selectedEvent.accuracyMetrics.totalValidated > 0 && (
+                <div className="mb-6 p-4 rounded-lg bg-gray-50">
+                  <h3 className="text-lg font-semibold mb-3 text-gray-800">Accuracy Analysis</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    <div className="bg-white p-3 rounded-lg border">
+                      <p className="text-xs text-gray-600">True Positives (TP)</p>
+                      <p className="text-lg font-bold text-green-600">{selectedEvent.accuracyMetrics.TP}</p>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border">
+                      <p className="text-xs text-gray-600">True Negatives (TN)</p>
+                      <p className="text-lg font-bold text-green-600">{selectedEvent.accuracyMetrics.TN}</p>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border">
+                      <p className="text-xs text-gray-600">False Positives (FP)</p>
+                      <p className="text-lg font-bold text-red-600">{selectedEvent.accuracyMetrics.FP}</p>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border">
+                      <p className="text-xs text-gray-600">False Negatives (FN)</p>
+                      <p className="text-lg font-bold text-red-600">{selectedEvent.accuracyMetrics.FN}</p>
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+                    <p className="text-sm text-gray-700 mb-2">
+                      <strong>Formula:</strong> Accuracy = (TP + TN) / (TP + TN + FP + FN)
+                    </p>
+                    <p className="text-sm text-gray-700">
+                      <strong>Calculation:</strong> ({selectedEvent.accuracyMetrics.TP} + {selectedEvent.accuracyMetrics.TN}) / 
+                      ({selectedEvent.accuracyMetrics.TP} + {selectedEvent.accuracyMetrics.TN} + {selectedEvent.accuracyMetrics.FP} + {selectedEvent.accuracyMetrics.FN}) = {selectedEvent.accuracyMetrics.accuracy.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-4">
+                    <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+                      <p className="text-sm font-semibold text-green-800">Matching Feedbacks</p>
+                      <p className="text-2xl font-bold text-green-600">{selectedEvent.matchingFeedbacks}</p>
+                    </div>
+                    <div className="bg-red-50 p-3 rounded-lg border border-red-200">
+                      <p className="text-sm font-semibold text-red-800">Mismatching Feedbacks</p>
+                      <p className="text-2xl font-bold text-red-600">{selectedEvent.mismatchingFeedbacks}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Average Ratings */}
               {Object.keys(selectedEvent.averageRatings).length > 0 && (
@@ -867,22 +1051,15 @@ const SentimentAnalyzer: React.FC = () => {
                   <h3 className="text-lg font-semibold mb-3 text-gray-800">Comments</h3>
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {selectedEvent.compiledResponses["Comments"].map((comment, i) => {
-                      const score = sentiment.analyze(comment).score;
-                      let label = "Neutral";
-                      let labelColor = "text-gray-600";
-                      if (score > 0) {
-                        label = "Positive";
-                        labelColor = "text-green-600";
-                      }
-                      if (score < 0) {
-                        label = "Negative";
-                        labelColor = "text-red-600";
-                      }
+                      const commentSentiment = getSentimentFromComment(comment);
+                      const labelColor = commentSentiment === "Positive" ? "text-green-600" : 
+                                        commentSentiment === "Negative" ? "text-red-600" : "text-gray-600";
+                      
                       return (
                         <div key={i} className="bg-gray-50 p-3 rounded border-l-4 border-gray-300">
                           <p className="text-sm text-gray-700">{comment}</p>
                           <span className={`text-xs font-semibold ${labelColor}`}>
-                            Sentiment: {label}
+                            Sentiment: {commentSentiment}
                           </span>
                         </div>
                       );
@@ -891,35 +1068,61 @@ const SentimentAnalyzer: React.FC = () => {
                 </div>
               )}
 
-                {/* Individual Responses */}
-                <div className="mt-4">
+              {/* Individual Responses */}
+              <div className="mt-4">
                 <h2 className="text-xl font-semibold mb-2">Individual Responses</h2>
                 {selectedEvent.feedbacks && selectedEvent.feedbacks.length > 0 ? (
-                  selectedEvent.feedbacks.map((feedback, idx) => (
-                  <div key={feedback.feedbackId || idx} className="p-2 border rounded mb-2">
-                    {feedback.comments && (
-                    <p className="mb-1">
-                      <strong>Comment:</strong> {feedback.comments}
-                    </p>
-                    )}
-                    {feedback.ratings && (
-                    <div>
-                      <strong>Ratings:</strong>
-                      <ul className="list-disc list-inside">
-                      {Object.entries(feedback.ratings).map(([category, rating]) => (
-                        <li key={category}>
-                        {category}: {rating}/5
-                        </li>
-                      ))}
-                      </ul>
-                    </div>
-                    )}
-                  </div>
-                  ))
+                  selectedEvent.feedbacks.map((feedback, idx) => {
+                    const isMatch = feedback.sentimentMatch !== false;
+                    return (
+                      <div 
+                        key={feedback.feedbackId || idx} 
+                        className={`p-3 border rounded mb-2 ${isMatch ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <span className={`text-xs font-semibold px-2 py-1 rounded ${isMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                            {isMatch ? '✓ Match' : '✗ Mismatch'}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {feedback.timestamp?.toDate?.()?.toLocaleString() || 'N/A'}
+                          </span>
+                        </div>
+                        {feedback.comments && (
+                          <p className="mb-1">
+                            <strong>Comment:</strong> {feedback.comments}
+                            <span className={`ml-2 text-xs font-semibold ${
+                              getSentimentFromComment(feedback.comments) === "Positive" ? 'text-green-600' :
+                              getSentimentFromComment(feedback.comments) === "Negative" ? 'text-red-600' : 'text-gray-600'
+                            }`}>
+                              ({getSentimentFromComment(feedback.comments)} sentiment)
+                            </span>
+                          </p>
+                        )}
+                        {feedback.ratings && (
+                          <div>
+                            <strong>Ratings:</strong>
+                            <ul className="list-disc list-inside">
+                              {Object.entries(feedback.ratings).map(([category, rating]) => (
+                                <li key={category}>
+                                  {category}: {rating}/5
+                                  <span className={`ml-2 text-xs font-semibold ${
+                                    getSentimentFromRating(rating) === "Positive" ? 'text-green-600' :
+                                    getSentimentFromRating(rating) === "Negative" ? 'text-red-600' : 'text-gray-600'
+                                  }`}>
+                                    ({getSentimentFromRating(rating)} sentiment)
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 ) : (
                   <p>No responses available.</p>
                 )}
-                </div>
+              </div>
 
               {/* Download buttons */}
               <div className="flex justify-center gap-4 mt-6">

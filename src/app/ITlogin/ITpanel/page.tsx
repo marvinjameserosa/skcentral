@@ -9,14 +9,13 @@ import {
   DocumentData,
   doc,
   updateDoc,
-  deleteDoc,
 } from "firebase/firestore";
 import {
   getAuth,
   createUserWithEmailAndPassword,
-  deleteUser,
-  sendPasswordResetEmail,
+  signOut,
 } from "firebase/auth";
+import { useRouter } from "next/navigation";
 
 type Account = {
   id?: string;
@@ -77,9 +76,9 @@ const modules = [
     href: "/learningHub",
   },
   {
-    id: "sentiment-analyzer",
-    title: "Sentiment Analyzer",
-    href: "/sentiment-analyzer",
+    id: "feedbacks",
+    title: "Feedbacks",
+    href: "/feedbacks",
   },
   {
     id: "podcast",
@@ -128,6 +127,7 @@ const generateSkId = (barangay: string) => {
 };
 
 export default function AccountsTable() {
+  const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -177,6 +177,17 @@ export default function AccountsTable() {
       setAccounts(fetchedAccounts);
     } catch (error) {
       console.error("Error fetching accounts: ", error);
+    }
+  };
+
+  // Handle Logout
+  const handleLogout = async () => {
+    try {
+      const auth = getAuth();
+      await signOut(auth);
+      router.push("/");
+    } catch (error) {
+      console.error("Error logging out: ", error);
     }
   };
 
@@ -306,41 +317,38 @@ export default function AccountsTable() {
   const handleDeleteAccount = async () => {
     try {
       if (!editFormData.id || !editFormData.uid) {
-        setConfirmMessage("Account ID or UID missing for deletion.");
+        setConfirmMessage("Account ID or UID missing for archiving.");
         setShowSuccessModal(true);
         return;
       }
 
-      // Delete from Firestore
-      await deleteDoc(doc(db, "adminUsers", editFormData.id));
+      // Archive the account in Firestore by setting an "archived" flag.
+      await updateDoc(doc(db, "adminUsers", editFormData.id), {
+        archived: true,
+      });
 
-      // Delete from Firebase Auth
       const auth = getAuth();
-      const userToDelete = auth.currentUser;
+      const currentUser = auth.currentUser;
 
-      if (userToDelete && userToDelete.uid === editFormData.uid) {
-        await deleteUser(userToDelete);
+      // Note: Disabling a Firebase Auth user must be done server-side.
+      // If the current user is the same as the archived account, sign out to prevent further use.
+      if (currentUser && currentUser.uid === editFormData.uid) {
+        await signOut(auth);
       } else {
         console.warn(
-          "Cannot delete user directly from client-side if not currently authenticated user. Consider a backend solution."
+          "Archiving credentials must be handled on the backend. Ensure that archived users cannot log in."
         );
-        setConfirmMessage(
-          "User deleted from database. Note: Authentication entry may need backend deletion."
-        );
-        setShowSuccessModal(true);
-        await fetchAccounts();
-        setShowEditModal(false);
-        return;
       }
 
       await fetchAccounts();
       setShowEditModal(false);
-      setConfirmMessage("Account deleted successfully!");
+      setConfirmMessage("Account archived successfully!");
       setShowSuccessModal(true);
     } catch (error: unknown) {
-      console.error("Error deleting account: ", error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      setConfirmMessage(errorMessage || "Error deleting account.");
+      console.error("Error archiving account: ", error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      setConfirmMessage(errorMessage || "Error archiving account.");
       setShowSuccessModal(true);
     }
   };
@@ -348,19 +356,23 @@ export default function AccountsTable() {
   // Handle Reset Password (sends email)
   const handleResetPassword = async () => {
     try {
-      if (!editFormData.email) {
-        setResetPasswordMessage("Email address is missing for password reset.");
+      if (!editFormData.email || !editFormData.id) {
+        setResetPasswordMessage("Account email or ID is missing for password reset.");
         return;
       }
-      const auth = getAuth();
-      await sendPasswordResetEmail(auth, editFormData.email);
+      // Reset the password in the Firestore record to default
+      await updateDoc(doc(db, "adminUsers", editFormData.id), {
+        password: "skcentralmarikina",
+      });
       setResetPasswordMessage(
-        `Password reset email sent to ${editFormData.email}.`
+        `Password for ${editFormData.email} has been reset to default ("skcentralmarikina").`
       );
     } catch (error: unknown) {
-      console.error("Error sending password reset email: ", error);
+      console.error("Error resetting password: ", error);
       setResetPasswordMessage(
-        (error instanceof Error ? error.message : "Failed to send password reset email.")
+        error instanceof Error
+          ? error.message
+          : "Failed to reset password to default."
       );
     }
   };
@@ -386,10 +398,16 @@ export default function AccountsTable() {
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col">
-          <div className="flex flex-col p-8">
+          <div className="flex justify-between items-center p-8">
             <h1 className="text-4xl font-bold text-[#103F91]">
               Configurations of Accounts
             </h1>
+            <button
+              onClick={handleLogout}
+              className="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700 transition-colors"
+            >
+              Logout
+            </button>
           </div>
 
           {/* Table */}
@@ -455,7 +473,7 @@ export default function AccountsTable() {
 
       {/* Create Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#e7f0fa] rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 shadow-lg border-2 border-[#0A2F7A] relative">
             <button
               onClick={() => setShowModal(false)}
@@ -629,7 +647,7 @@ export default function AccountsTable() {
 
       {/* Edit Modal */}
       {showEditModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#e7f0fa] rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 shadow-lg border-2 border-[#0A2F7A] relative">
             <button
               onClick={() => setShowEditModal(false)}
@@ -783,36 +801,29 @@ export default function AccountsTable() {
                   </p>
                 )}
                 <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowEditModal(false)}
-                    className="bg-gray-400 text-white px-4 py-2 rounded-lg hover:bg-gray-500"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A]"
-                  >
-                    Save Changes
-                  </button>
                 </div>
                 <div className="flex justify-between gap-2 mt-2">
                   <button
                     type="button"
                     onClick={handleResetPassword}
-                    className="bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 flex-1"
+                    className="bg-yellow-500 text-black px-4 py-2 rounded-lg hover:bg-orange-600 flex-1"
                   >
-                    Reset Password (Send Email)
+                    Reset Password
                   </button>
                   <button
                     type="button"
                     onClick={handleDeleteAccount}
                     className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex-1"
                   >
-                    Delete Account
+                    Archive Account
                   </button>
                 </div>
+                                  <button
+                    type="submit"
+                    className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A]"
+                  >
+                    Save Changes
+                  </button>
               </div>
             </form>
           </div>
@@ -821,7 +832,7 @@ export default function AccountsTable() {
 
       {/* Success Modal */}
       {showSuccessModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-opacity-50 backdrop-blur-lg flex items-center justify-center z-50">
           <div className="bg-white rounded-2xl p-6 shadow-lg border-2 border-[#0A2F7A] w-full max-w-sm text-center">
             <p className="text-[#103F91] font-semibold mb-4">
               {confirmMessage}

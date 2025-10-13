@@ -40,7 +40,7 @@ export default function MarikinaForgotPassword() {
       className="min-h-screen flex items-center justify-center bg-cover bg-center"
       style={{ backgroundImage: `url('/LoginBG.png')` }}
     >
-      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white bg-opacity-95 rounded-2xl shadow-2xl p-8 w-full max-w-md border border-black border-[0.5px]">
+      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white bg-opacity-95 rounded-none shadow-2xl p-8 w-full max-w-md border border-black border-[0.5px]">
         {/* Logo */}
         <div className="flex justify-center mb-4">
           <Image
@@ -90,7 +90,7 @@ export default function MarikinaForgotPassword() {
           </button>
         </form>
         <Link href="/">
-          <p className="text-center text-sm text-blue-900 cursor-pointer hover:underline">
+          <p className="text-center text-sm text-blue-900 mt-4 cursor-pointer hover:underline">
             Back to Login
           </p>
         </Link>

@@ -1,7 +1,7 @@
+/* eslint-disable react/no-unescaped-entities */
 'use client';
 
 import { useState } from 'react';
-import Image from 'next/image';
 import Navbar from "../../Components/Navbar";
 
 export default function UserSettings() {
@@ -9,30 +9,42 @@ export default function UserSettings() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
-  const [code, setCode] = useState('');
   const [passwords, setPasswords] = useState({
     current: '',
     newPass: '',
     confirm: '',
   });
-
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [kabataanID, setKabataanID] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
 
   const handlePasswordChangeClick = () => {
     setShowEmailModal(true); // Show email verification first
   };
 
-  const handleEmailVerification = () => {
-    setShowEmailModal(false); // Close email verification modal
-    setShowPasswordModal(true); // Show password change modal
-  };
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!kabataanID) {
+      setErrorMessage('Please enter your Sangguniang Kabataan ID.');
+      return;
+    }
 
-  const handleDeviceModalClick = () => {
-    setShowDeviceModal(true); // Show device modal
+    try {
+      // Simulate sending password reset email
+      // Replace this with actual Firebase auth call: await sendPasswordResetEmail(auth, email);
+      setSuccessMessage('Password reset email sent. Check your inbox!');
+      setErrorMessage(''); // Reset error message on success
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        setErrorMessage(error.message); // Show error if something goes wrong
+      } else {
+        setErrorMessage('An unexpected error occurred.');
+      }
+      setSuccessMessage(''); // Reset success message
+    }
   };
-
 
   const handleLogin = () => {
     // Dummy credentials for validation (replace with actual logic)
@@ -67,7 +79,6 @@ export default function UserSettings() {
           <p className="text-sm text-gray-700 mb-4">
             Manage your passwords, login preferences, and recovery methods.
           </p>
-
           <div className="space-y-4">
             <div
               className="bg-[#d9e8f6] px-6 py-4 rounded-md cursor-pointer"
@@ -79,59 +90,50 @@ export default function UserSettings() {
         </div>
       </div>
 
-      {/* Where You're Logged In Section */}
-      <div className="bg-white rounded-xl shadow-lg">
-        <div className="p-6">
-          <h2 className="text-2xl font-bold text-[#0A2F7A] mb-1">Where you’re logged in</h2>
-          <p className="text-sm text-gray-700 mb-4">
-            See what device are used to log in to your accounts
-          </p>
-
-          <div
-            className="bg-[#d9e8f6] flex justify-between items-center px-6 py-4 rounded-md cursor-pointer"
-            onClick={handleDeviceModalClick} // Open device modal
-          >
-            <div>
-              <p className="text-xl font-semibold text-[#0A2F7A]">Device</p>
-              <p className="text-sm text-gray-700">Location</p>
-            </div>
-            <p className="text-xl font-bold text-[#0A2F7A]">DATE AND TIME</p>
-            <Image src="/ArrowRight.svg" alt="Arrow" width={24} height={24} />
-          </div>
-        </div>
-      </div>
-
       {/* MODAL: Check your Email */}
       {showEmailModal && (
         <div className="fixed inset-0 bg-opacity-30 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-[#e7f0fa] rounded-2xl w-[400px] p-6 text-center shadow-lg border-2 border-[#0A2F7A]">
-            <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2">Check your Email</h2>
-            <p className="text-lg text-gray-700 mb-4">Enter the code we sent to your email</p>
-
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="Code"
-              className="w-full text-xl font-bold px-4 py-2 border border-gray-400 rounded-md mb-2"
-            />
-
-            <p className="text-sm text-[#0A2F7A] font-semibold mb-4 cursor-pointer hover:underline">
-              Get a new Code
-            </p>
-
-            <button
-              onClick={handleEmailVerification} // Proceed to password change modal
-              className="w-full bg-[#1167B1] text-white text-xl font-bold py-3 rounded-md mb-2 hover:bg-[#0e5290]"
-            >
-              Continue
-            </button>
+          <div className="bg-[#e7f0fa] rounded-none w-[450px] p-6 pt-8 relative text-center shadow-lg border-2 border-[#0A2F7A]">
+            {/* Close button inside modal */}
             <button
               onClick={() => setShowEmailModal(false)}
-              className="w-full bg-[#fcd116] text-black text-xl font-bold py-3 rounded-md hover:brightness-90"
+              className="absolute top-4 right-4 text-white bg-red-600 rounded-full w-8 h-8 flex items-center justify-center"
             >
-              Cancel
+              <span className="text-2xl">X</span>
             </button>
+            <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2">Password Reset</h2>
+            <p className="text-sm text-gray-700 mb-6">
+              Enter your Sangguniang Kabataan ID and email to receive a password reset link.
+            </p>
+            {/* Form */}
+            <form onSubmit={handlePasswordReset} className="space-y-4">
+              {/* Sangguniang Kabataan ID input */}
+              <input
+                type="text"
+                placeholder="Enter your Sangguniang Kabataan ID"
+                className="w-full border border-blue-800 rounded-md px-3 py-2 text-blue-900 placeholder-blue-900 focus:outline-none"
+                value={kabataanID}
+                onChange={(e) => setKabataanID(e.target.value)} // Bind Kabataan ID state
+                required
+              />
+              {/* Email input */}
+              <input
+                type="email"
+                placeholder="Enter your email address"
+                className="w-full border border-blue-800 rounded-md px-3 py-2 text-blue-900 placeholder-blue-900 focus:outline-none"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)} // Bind email state
+                required
+              />
+              {errorMessage && <p className="text-red-600 text-center">{errorMessage}</p>} {/* Show error message */}
+              {successMessage && <p className="text-green-600 text-center">{successMessage}</p>} {/* Show success message */}
+              <button
+                type="submit"
+                className="w-full bg-blue-900 text-white py-2 rounded-md font-bold hover:bg-blue-800 transition"
+              >
+                SEND RESET LINK
+              </button>
+            </form>
           </div>
         </div>
       )}
@@ -139,7 +141,7 @@ export default function UserSettings() {
       {/* MODAL: Change Password */}
       {showPasswordModal && (
         <div className="fixed inset-0 bg-opacity-30 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-[#e7f0fa] rounded-2xl w-[450px] p-6 pt-8 relative text-center shadow-lg border-2 border-[#0A2F7A]">
+          <div className="bg-[#e7f0fa] rounded-none w-[450px] p-6 pt-8 relative text-center shadow-lg border-2 border-[#0A2F7A]">
             {/* Close button inside modal */}
             <button
               onClick={() => setShowPasswordModal(false)}
@@ -147,13 +149,10 @@ export default function UserSettings() {
             >
               <span className="text-2xl">X</span>
             </button>
-
             <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2">Change Password</h2>
             <p className="text-sm text-gray-700 mb-6">
-              Your password must be at least 8 characters and should include a combination
-              of numbers, letters and special characters (!@$%).
+              Your password must be at least 8 characters and should include a combination of numbers, letters and special characters (!@$%).
             </p>
-
             <div className="space-y-3 mb-4">
               <input
                 type="password"
@@ -177,11 +176,9 @@ export default function UserSettings() {
                 className="w-full text-lg font-bold text-[#0A2F7A] px-4 py-2 border border-gray-400 rounded-md"
               />
             </div>
-
             <p className="text-sm text-[#0A2F7A] font-semibold mb-6 cursor-pointer hover:underline">
               Forgot your Password
             </p>
-
             <button
               onClick={() => alert('Password changed')}
               className="w-full bg-[#1167B1] text-white text-xl font-bold py-3 rounded-md hover:bg-[#0e5290]"
@@ -195,7 +192,7 @@ export default function UserSettings() {
       {/* MODAL: Device Login Details */}
       {showDeviceModal && (
         <div className="fixed inset-0 bg-opacity-30 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-[#e7f0fa] rounded-2xl w-[400px] p-6 shadow-lg border-2 border-[#0A2F7A] relative">
+          <div className="bg-[#e7f0fa] rounded-none w-[400px] p-6 shadow-lg border-2 border-[#0A2F7A] relative">
             {/* X button inside the modal shape, at the top-right corner */}
             <button
               onClick={() => setShowDeviceModal(false)}
@@ -203,25 +200,20 @@ export default function UserSettings() {
             >
               <span className="text-2xl">X</span>
             </button>
-
             <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2 text-center mt-4">Logins on Device</h2>
             <p className="text-lg text-gray-700 mb-8 text-center">
-              We’ll help you secure your account in case you see a login you don’t recognize.
+              We will help you secure your account in case you see a login you don't recognize.
             </p>
-
             {/* Separator line */}
             <div className="border-t border-gray-300 my-4"></div>
-
             {/* Device, Location, DATE AND YEAR section */}
             <div className="mb-8 text-left">
               <p className="text-xl font-semibold text-[#0A2F7A]">Device</p>
               <p className="text-sm text-gray-700">Location</p>
               <p className="text-xl font-bold text-[#0A2F7A]">DATE AND YEAR</p>
             </div>
-
             {/* Separator line */}
             <div className="border-t border-gray-300 my-6"></div>
-
             {/* Logout button */}
             <button
               onClick={() => setShowLoginModal(true)} // Open the login confirmation modal after logging out
@@ -233,68 +225,64 @@ export default function UserSettings() {
         </div>
       )}
 
-{/* MODAL: Login Confirmation */}
-{showLoginModal && (
-  <div className="fixed inset-0 bg-opacity-30 backdrop-blur-sm flex items-center justify-center z-50">
-    <div className="bg-[#e7f0fa] rounded-2xl w-[400px] p-6 shadow-lg border-2 border-[#0A2F7A] relative">
-      {/* Close button inside modal */}
-      <button
-        onClick={() => {
-          setShowEmailModal(false);  // Close all modals
-          setShowPasswordModal(false);
-          setShowDeviceModal(false);
-          setShowLoginModal(false);
-        }}
-        className="absolute top-4 right-4 text-white bg-red-600 rounded-full w-8 h-8 flex items-center justify-center"
-      >
-        <span className="text-2xl">X</span>
-      </button>
-
-      <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2 text-center mt-4">Confirmation</h2>
-      <p className="text-sm text-gray-600 text-center mb-4">
-        For confirmation, please input your credentials to proceed with the process
-      </p>
-
-      {/* Email input */}
-      <div className="mb-4">
-        <input
-          type="text"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full text-lg font-bold text-[#0A2F7A] px-4 py-2 border border-gray-400 rounded-md"
-          placeholder="Enter your SK ID/Email"
-        />
-      </div>
-
-      {/* Password input */}
-      <div className="mb-4">
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full text-lg font-bold text-[#0A2F7A] px-4 py-2 border border-gray-400 rounded-md"
-          placeholder="Enter your password"
-        />
-      </div>
-
-      {/* Error message */}
-      {errorMessage && (
-        <p className="text-sm text-red-600 text-center mb-4">
-          {errorMessage}
-        </p>
+      {/* MODAL: Login Confirmation */}
+      {showLoginModal && (
+        <div className="fixed inset-0 bg-opacity-30 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-[#e7f0fa] rounded-none w-[400px] p-6 shadow-lg border-2 border-[#0A2F7A] relative">
+            {/* Close button inside modal */}
+            <button
+              onClick={() => {
+                setShowEmailModal(false); // Close all modals
+                setShowPasswordModal(false);
+                setShowDeviceModal(false);
+                setShowLoginModal(false);
+              }}
+              className="absolute top-4 right-4 text-white bg-red-600 rounded-full w-8 h-8 flex items-center justify-center"
+            >
+              <span className="text-2xl">X</span>
+            </button>
+            <h2 className="text-3xl font-bold text-[#0A2F7A] mb-2 text-center mt-4">Confirmation</h2>
+            <p className="text-sm text-gray-600 text-center mb-4">
+              For confirmation, please input your credentials to proceed with the process
+            </p>
+            {/* Email input */}
+            <div className="mb-4">
+              <input
+                type="text"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full text-lg font-bold text-[#0A2F7A] px-4 py-2 border border-gray-400 rounded-md"
+                placeholder="Enter your SK ID/Email"
+              />
+            </div>
+            {/* Password input */}
+            <div className="mb-4">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full text-lg font-bold text-[#0A2F7A] px-4 py-2 border border-gray-400 rounded-md"
+                placeholder="Enter your password"
+              />
+            </div>
+            {/* Error message */}
+            {errorMessage && (
+              <p className="text-sm text-red-600 text-center mb-4">
+                {errorMessage}
+              </p>
+            )}
+            {/* Proceed button */}
+            <button
+              onClick={handleLogin}
+              className="w-full bg-[#1167B1] text-white text-xl font-bold py-3 rounded-md mb-2 hover:bg-[#0e5290]"
+            >
+              Proceed
+            </button>
+          </div>
+        </div>
       )}
 
-      {/* Proceed button */}
-      <button
-        onClick={handleLogin}
-        className="w-full bg-[#1167B1] text-white text-xl font-bold py-3 rounded-md mb-2 hover:bg-[#0e5290]"
-      >
-        Proceed
-      </button>
-    </div>
-  </div>
-)}
-        <Navbar></Navbar>
+      <Navbar></Navbar>
     </div>
   );
 }
