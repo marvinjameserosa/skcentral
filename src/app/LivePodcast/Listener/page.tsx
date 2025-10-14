@@ -14,6 +14,9 @@ import {
 } from "firebase/database";
 import { FaPhoneSlash, FaVolumeUp, FaVolumeMute } from "react-icons/fa";
 import Navbar from "@/app/Components/Navbar";
+import { auth, db } from "@/app/Firebase/firebase";
+import { collection, query, where, getDocs } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
 type ListenerStatus = "idle" | "connecting" | "connected" | "error" | "not_found" | "ended";
 
@@ -41,6 +44,8 @@ const ListenerPageContent = () => {
   const [connectionState, setConnectionState] = useState<string>("new");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [reactionCooldown, setReactionCooldown] = useState(false);
+  const [hostVideoStream, setHostVideoStream] = useState<MediaStream | null>(null);
+  const [userDisplayName, setUserDisplayName] = useState<string>("");
 
   const listenerIdRef = useRef<string>(`listener-${Date.now()}`);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -58,13 +63,50 @@ const ListenerPageContent = () => {
     if (userId) listenerIdRef.current = userId;
   }, [searchParams]);
 
+  // Fetch user name from adminUsers collection
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          const q = query(collection(db, "adminUsers"), where("uid", "==", user.uid));
+          const querySnapshot = await getDocs(q);
+          
+          if (!querySnapshot.empty) {
+            const userData = querySnapshot.docs[0].data();
+            const name = userData.name || "Podcast Listener";
+            setUserDisplayName(name);
+            console.log("[Listener] User name fetched:", name);
+          } else {
+            setUserDisplayName("Podcast Listener");
+            console.log("[Listener] No user data found, using default name");
+          }
+        } catch (error) {
+          console.error("[Listener] Error fetching user name:", error);
+          setUserDisplayName("Podcast Listener");
+        }
+      } else {
+        setUserDisplayName("Podcast Listener");
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   const generateListenerName = useCallback(() => {
+    // If we have a user display name from the database, use it
+    if (userDisplayName) {
+      return userDisplayName;
+    }
+    
+    // Otherwise check URL parameter
     const userName = searchParams.get("userName");
     if (userName) return decodeURIComponent(userName);
+    
+    // Fallback to random name
     const adjectives = ["Happy", "Curious", "Friendly", "Smart", "Cool", "Bright", "Eager"];
     const nouns = ["Listener", "Fan", "Friend", "Buddy", "Guest", "Attendee"];
     return `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`;
-  }, [searchParams]);
+  }, [searchParams, userDisplayName]);
 
   const createAudioElement = useCallback((participantId: string, stream: MediaStream) => {
     console.log(`[Listener] 🔊 Creating audio element for ${participantId}`);
@@ -137,22 +179,32 @@ const ListenerPageContent = () => {
       ],
     });
 
+    // Add audio transceiver (recvonly)
     pc.addTransceiver("audio", { direction: "recvonly" });
+    // Add video transceiver (recvonly) for host viewing
+    pc.addTransceiver("video", { direction: "recvonly" });
 
     pc.ontrack = (event) => {
-      console.log("[Listener] ✅ Received remote track:", event.track.kind);
-      if (event.streams[0]) {
-        console.log("[Listener] 🔊 Creating audio element for incoming stream (host audio)");
-        createAudioElement(`host-${Date.now()}`, event.streams[0]);
-        
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = event.streams[0];
-          remoteAudioRef.current.muted = isAudioMuted;
-          remoteAudioRef.current.volume = 1.0;
-          remoteAudioRef.current.play().catch((err) => {
-            console.log("[Listener] Autoplay blocked:", err.message);
-          });
-          console.log("[Listener] 🔊 Host audio attached to main audio element");
+      console.log("[Listener] Received remote track:", event.track.kind);
+      if (event.track.kind === "audio") {
+        if (event.streams[0]) {
+          console.log("[Listener] 🔊 Creating audio element for incoming audio (host audio)");
+          createAudioElement(`host-audio-${Date.now()}`, event.streams[0]);
+          
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = event.streams[0];
+            remoteAudioRef.current.muted = isAudioMuted;
+            remoteAudioRef.current.volume = 1.0;
+            remoteAudioRef.current.play().catch((err) => {
+              console.log("[Listener] Autoplay blocked:", err.message);
+            });
+            console.log("[Listener] 🔊 Host audio attached to main audio element");
+          }
+        }
+      } else if (event.track.kind === "video") {
+        if (event.streams[0]) {
+          console.log("[Listener] 🎥 Received host video stream");
+          setHostVideoStream(event.streams[0]);
         }
       }
     };
@@ -175,7 +227,7 @@ const ListenerPageContent = () => {
       
       if (pc.connectionState === "connected") {
         console.log("[Listener] ✅ WebRTC connected!");
-        console.log("[Listener] ✅ Receiving host audio!");
+        console.log("[Listener] ✅ Receiving host stream!");
       } else if (pc.connectionState === "failed") {
         console.error("[Listener] ❌ Connection failed");
       }
@@ -194,7 +246,7 @@ const ListenerPageContent = () => {
       console.log("[Listener] Creating offer...");
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: false,
+        offerToReceiveVideo: true,
       });
       
       console.log("[Listener] Setting local description...");
@@ -273,7 +325,7 @@ const ListenerPageContent = () => {
         joinedAt: Date.now(),
       };
       
-      console.log("[Listener] Adding listener to participants");
+      console.log("[Listener] Adding listener to participants with name:", listenerData.name);
       await set(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}`), listenerData);
       
       await sendOffer(pc);
@@ -289,10 +341,10 @@ const ListenerPageContent = () => {
   }, [roomId, createPeerConnection, generateListenerName, sendOffer, initializeAudio]);
 
   useEffect(() => {
-    if (roomId && status === "idle") {
+    if (roomId && status === "idle" && userDisplayName) {
       joinPodcast();
     }
-  }, [roomId, status, joinPodcast]);
+  }, [roomId, status, userDisplayName, joinPodcast]);
 
   const sendEmojiReaction = useCallback(async (emoji: string) => {
     if (!roomId) return;
@@ -609,14 +661,30 @@ const ListenerPageContent = () => {
         <div className="p-8">
           {hostParticipant && (
             <div className="mb-8 text-center relative">
-              <div className="w-40 h-40 mx-auto mb-4 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-7xl shadow-2xl relative">
-                {hostParticipant.avatar}
-                {hostParticipant.emoji && (
-                  <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-5xl animate-bounce">
-                    {hostParticipant.emoji}
-                  </div>
-                )}
-              </div>
+              {hostVideoStream ? (
+                <video
+                  className="w-80 h-80 mx-auto rounded-xl shadow-xl"
+                  autoPlay
+                  playsInline
+                  muted={isAudioMuted}
+                  style={{ objectFit: "cover" }}
+                  ref={(video) => {
+                    if (video && hostVideoStream) {
+                      video.srcObject = hostVideoStream;
+                      video.play().catch(err => console.log(err));
+                    }
+                  }}
+                />
+              ) : (
+                <div className="w-40 h-40 mx-auto mb-4 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-7xl shadow-2xl relative">
+                  {hostParticipant.avatar}
+                  {hostParticipant.emoji && (
+                    <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-5xl animate-bounce">
+                      {hostParticipant.emoji}
+                    </div>
+                  )}
+                </div>
+              )}
               <h2 className="text-2xl font-bold text-gray-800">{hostParticipant.name}</h2>
               <p className="text-blue-600 font-semibold text-lg">Host</p>
             </div>
@@ -662,7 +730,7 @@ const ListenerPageContent = () => {
               } text-white`}
               title={isAudioMuted ? "Unmute speakers (hear host)" : "Mute speakers"}
             >
-              {isAudioMuted ? <FaVolumeMute size={28} /> : <FaVolumeUp size={28} />}
+              {isAudioMuted ? <FaVolumeMute size={28} /> : <FaVolumeUp size={28}/>}
             </button>
 
             <div className="relative">

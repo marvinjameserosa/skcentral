@@ -110,6 +110,20 @@ const PodcastApproval = () => {
       console.log("Creating room with:", { roomId, hostId, hostName });
 
       // 1. Add to approved podcasts collection
+      await setDoc(doc(db, "podcasts", podcastData.podcastId), {
+        podcastId: podcastData.podcastId,
+        title: podcastData.title,
+        speaker: podcastData.speaker,
+        topic: podcastData.topic,
+        date: podcastData.date,
+        time: podcastData.time,
+        userUID: podcastData.userUID,
+        status: "waiting", // changed status from approved to waiting
+        approved: true, // added approved field
+        roomId: roomId,
+        hostId: hostId,
+        approvedAt: serverTimestamp(),
+      });
 
       // 2. Create room document in "rooms" collection
       await setDoc(doc(db, "rooms", roomId), {
@@ -143,6 +157,7 @@ const PodcastApproval = () => {
       });
 
       console.log("✅ Room created successfully:", roomId);
+      console.log("✅ Podcast added to podcasts collection");
 
       // 4. Remove from pending collection
       await deleteDoc(podcastRef);

@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import Navbar from "../../Components/Navbar";
 import { db } from "@/app/Firebase/firebase";
@@ -8,8 +8,11 @@ import {
   setDoc,
   serverTimestamp,
   collection,
+  query,
+  where,
+  getDocs,
 } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 
 interface FormData {
   speaker: string;
@@ -30,7 +33,55 @@ const PodcastForm = () => {
 
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoadingName, setIsLoadingName] = useState(true);
 
+  // ✅ Fetch logged-in user's name from adminUsers
+  useEffect(() => {
+    const auth = getAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          // 🔍 Query adminUsers where uid == current user's UID
+          const q = query(collection(db, "adminUsers"), where("uid", "==", user.uid));
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+            const userData = querySnapshot.docs[0].data();
+
+            // ✅ Set speaker name automatically
+            setFormData((prev) => ({
+              ...prev,
+              speaker: userData.name || "",
+            }));
+
+            console.log("✅ Name fetched:", userData.name);
+          } else {
+            console.warn("⚠️ No adminUsers document found for this UID.");
+            setFormData((prev) => ({
+              ...prev,
+              speaker: "No name found",
+            }));
+          }
+        } catch (error) {
+          console.error("❌ Error fetching name:", error);
+          setFormData((prev) => ({
+            ...prev,
+            speaker: "Error loading name",
+          }));
+        } finally {
+          setIsLoadingName(false);
+        }
+      } else {
+        console.warn("⚠️ User not logged in");
+        setIsLoadingName(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // ✅ Handle input changes
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
@@ -38,6 +89,7 @@ const PodcastForm = () => {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
+  // ✅ Handle form submission
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
@@ -48,10 +100,10 @@ const PodcastForm = () => {
       return;
     }
 
-    // Show confirmation modal
     setShowConfirmation(true);
   };
 
+  // ✅ Handle confirmation modal
   const handleConfirmation = async (confirmed: boolean) => {
     const auth = getAuth();
     const user = auth.currentUser;
@@ -63,10 +115,9 @@ const PodcastForm = () => {
     setIsSubmitting(true);
 
     try {
-      // Create a new document reference with a generated ID (same as Flutter)
+      // Create a new document reference
       const newDocRef = doc(collection(db, "podcastRegistration"));
 
-      // Save the proposal data
       await setDoc(newDocRef, {
         podcastId: newDocRef.id,
         userUID: user.uid,
@@ -80,7 +131,7 @@ const PodcastForm = () => {
       });
 
       alert("🎉 Proposal Submitted (Pending Review)");
-      setFormData({ speaker: "", title: "", topic: "", date: "", time: "" });
+      setFormData({ speaker: formData.speaker, title: "", topic: "", date: "", time: "" });
       setShowConfirmation(false);
     } catch (error) {
       console.error("Error submitting proposal:", error);
@@ -133,10 +184,10 @@ const PodcastForm = () => {
               type="text"
               id="speaker"
               name="speaker"
-              value={formData.speaker}
+              value={isLoadingName ? "Loading..." : formData.speaker}
               onChange={handleInputChange}
               className="w-full p-3 border border-gray-300 rounded-lg bg-[#D0EFFF]"
-              required
+              readOnly
             />
           </div>
 

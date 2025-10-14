@@ -268,6 +268,11 @@ const HostPageContent = () => {
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
+              {
+      urls: "turn:your-turn-server.com:3478",
+      username: "username",
+      credential: "password"
+    }
         ],
       });
   
