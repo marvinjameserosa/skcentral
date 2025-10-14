@@ -23,25 +23,11 @@ interface Participant {
   role: "host" | "listener";
   avatar: string;
   joinedAt: number;
+  emoji?: string;
+  emojiTimestamp?: number;
 }
 
-interface EmojiReaction {
-  id: string;
-  participantId: string;
-  emoji: string;
-  timestamp: number;
-}
-
-const EMOJI_OPTIONS = [
-  { emoji: "😊", label: "Happy" },
-  { emoji: "❤️", label: "Love" },
-  { emoji: "👍", label: "Like" },
-  { emoji: "😠", label: "Angry" },
-  { emoji: "📚", label: "Study" },
-  { emoji: "✌️", label: "Peace" },
-  { emoji: "😲", label: "Surprise" },
-  { emoji: "😂", label: "Funny" },
-];
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🔥", "🎉", "🤔"];
 
 const ListenerPageContent = () => {
   const router = useRouter();
@@ -50,14 +36,11 @@ const ListenerPageContent = () => {
   const [roomId, setRoomId] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [roomTitle, setRoomTitle] = useState("");
-  const [hostName, setHostName] = useState("");
-  const [listenerName, setListenerName] = useState("");
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [audioInitialized, setAudioInitialized] = useState(false);
   const [connectionState, setConnectionState] = useState<string>("new");
-  const [reactions, setReactions] = useState<Map<string, EmojiReaction[]>>(new Map());
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const [isReactionAnimating, setIsReactionAnimating] = useState(false);
+  const [reactionCooldown, setReactionCooldown] = useState(false);
 
   const listenerIdRef = useRef<string>(`listener-${Date.now()}`);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -65,6 +48,7 @@ const ListenerPageContent = () => {
   const audioContainerRef = useRef<HTMLDivElement>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const hasSetRemoteDescRef = useRef(false);
+  const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   useEffect(() => {
@@ -74,104 +58,23 @@ const ListenerPageContent = () => {
     if (userId) listenerIdRef.current = userId;
   }, [searchParams]);
 
-  const fetchUserName = useCallback(async (uid: string): Promise<string> => {
-    try {
-      const { doc, getDoc } = await import("firebase/firestore");
-      const { db } = await import("@/app/Firebase/firebase");
-      
-      // Try to fetch from ApprovedUsers first
-      const approvedUserRef = doc(db, "ApprovedUsers", uid);
-      const approvedUserSnapshot = await getDoc(approvedUserRef);
-      
-      if (approvedUserSnapshot.exists()) {
-        const userData = approvedUserSnapshot.data();
-        const firstName = userData.firstName || "";
-        const lastName = userData.lastName || "";
-        if (firstName || lastName) {
-          return `${firstName} ${lastName}`.trim();
-        }
-      }
-      
-      // If not found in ApprovedUsers, try adminUsers
-      const adminUserRef = doc(db, "adminUsers", uid);
-      const adminUserSnapshot = await getDoc(adminUserRef);
-      
-      if (adminUserSnapshot.exists()) {
-        const userData = adminUserSnapshot.data();
-        // Fallback to name field if firstName/lastName not available
-        if (userData.name) {
-          return userData.name;
-        }
-      }
-      
-      return "Podcast Listener";
-    } catch (error) {
-      console.error("Error fetching user name:", error);
-      return "Podcast Listener";
-    }
-  }, []);
-
-  const sendReaction = useCallback(async (emoji: string) => {
-    if (!roomId || isReactionAnimating) return;
-    
-    setIsReactionAnimating(true);
-    
-    const reactionData = {
-      participantId: listenerIdRef.current,
-      emoji,
-      timestamp: Date.now(),
-    };
-    
-    await push(ref(rtdb, `rooms/${roomId}/reactions`), reactionData);
-    setShowEmojiPicker(false);
-    
-    setTimeout(() => {
-      setIsReactionAnimating(false);
-    }, 3000);
-  }, [roomId, isReactionAnimating]);
-
-  useEffect(() => {
-    if (!roomId || status !== "connected") return;
-    
-    const reactionsRef = ref(rtdb, `rooms/${roomId}/reactions`);
-    const unsubscribe = onChildAdded(reactionsRef, (snapshot) => {
-      const reaction = snapshot.val() as EmojiReaction;
-      const reactionId = snapshot.key || `${Date.now()}`;
-      const reactionWithId = { ...reaction, id: reactionId };
-      
-      setReactions((prev) => {
-        const newReactions = new Map(prev);
-        const participantReactions = newReactions.get(reaction.participantId) || [];
-        newReactions.set(reaction.participantId, [...participantReactions, reactionWithId]);
-        return newReactions;
-      });
-      
-      setTimeout(async () => {
-        setReactions((prev) => {
-          const newReactions = new Map(prev);
-          const participantReactions = newReactions.get(reaction.participantId) || [];
-          const filtered = participantReactions.filter((r) => r.id !== reactionId);
-          if (filtered.length > 0) {
-            newReactions.set(reaction.participantId, filtered);
-          } else {
-            newReactions.delete(reaction.participantId);
-          }
-          return newReactions;
-        });
-        
-        await remove(ref(rtdb, `rooms/${roomId}/reactions/${reactionId}`));
-      }, 3000);
-    });
-    
-    return () => unsubscribe();
-  }, [roomId, status]);
+  const generateListenerName = useCallback(() => {
+    const userName = searchParams.get("userName");
+    if (userName) return decodeURIComponent(userName);
+    const adjectives = ["Happy", "Curious", "Friendly", "Smart", "Cool", "Bright", "Eager"];
+    const nouns = ["Listener", "Fan", "Friend", "Buddy", "Guest", "Attendee"];
+    return `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`;
+  }, [searchParams]);
 
   const createAudioElement = useCallback((participantId: string, stream: MediaStream) => {
+    console.log(`[Listener] 🔊 Creating audio element for ${participantId}`);
+    
     const oldAudio = audioElementsRef.current.get(participantId);
     if (oldAudio) {
       oldAudio.pause();
       oldAudio.srcObject = null;
       oldAudio.remove();
+      console.log(`[Listener] Removed old audio element for ${participantId}`);
     }
 
     const audio = document.createElement("audio");
@@ -185,8 +88,14 @@ const ListenerPageContent = () => {
       audioContainerRef.current.appendChild(audio);
     }
     
-    audio.play().catch(() => {});
+    audio.play().then(() => {
+      console.log(`[Listener] ✅ Audio playing for ${participantId}`);
+    }).catch((err) => {
+      console.log(`[Listener] Autoplay blocked for ${participantId}:`, err.message);
+    });
+
     audioElementsRef.current.set(participantId, audio);
+    remoteStreamsRef.current.set(participantId, stream);
   }, [isAudioMuted]);
 
   const initializeAudio = useCallback(async () => {
@@ -204,50 +113,76 @@ const ListenerPageContent = () => {
         audio.volume = 1.0;
         try {
           await audio.play();
-        } catch {}
+        } catch (err) {
+          console.log("[Listener] Audio play blocked:", err);
+        }
       });
       
       setAudioInitialized(true);
       setIsAudioMuted(false);
-    } catch {}
+      console.log("[Listener] ✅ Audio initialized - speakers enabled");
+    } catch {
+      console.log("[Listener] Audio autoplay blocked, waiting for user interaction");
+    }
   }, [audioInitialized]);
 
   const createPeerConnection = useCallback((): RTCPeerConnection => {
+    console.log("[Listener] Creating peer connection (listen only)");
+    
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" }
       ],
     });
 
     pc.addTransceiver("audio", { direction: "recvonly" });
 
     pc.ontrack = (event) => {
+      console.log("[Listener] ✅ Received remote track:", event.track.kind);
       if (event.streams[0]) {
+        console.log("[Listener] 🔊 Creating audio element for incoming stream (host audio)");
         createAudioElement(`host-${Date.now()}`, event.streams[0]);
         
         if (remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = event.streams[0];
           remoteAudioRef.current.muted = isAudioMuted;
           remoteAudioRef.current.volume = 1.0;
-          remoteAudioRef.current.play().catch(() => {});
+          remoteAudioRef.current.play().catch((err) => {
+            console.log("[Listener] Autoplay blocked:", err.message);
+          });
+          console.log("[Listener] 🔊 Host audio attached to main audio element");
         }
       }
     };
 
     pc.onicecandidate = (event) => {
       if (event.candidate && roomId) {
+        console.log("[Listener] Sending ICE candidate");
         push(ref(rtdb, `rooms/${roomId}/webrtc/${listenerIdRef.current}/listenerIceCandidates`), {
           candidate: event.candidate.candidate,
           sdpMLineIndex: event.candidate.sdpMLineIndex,
           sdpMid: event.candidate.sdpMid,
           timestamp: Date.now(),
-        }).catch(() => {});
+        }).catch(err => console.error("[Listener] Error sending ICE candidate:", err));
       }
     };
 
     pc.onconnectionstatechange = () => {
+      console.log("[Listener] Connection state:", pc.connectionState);
       setConnectionState(pc.connectionState);
+      
+      if (pc.connectionState === "connected") {
+        console.log("[Listener] ✅ WebRTC connected!");
+        console.log("[Listener] ✅ Receiving host audio!");
+      } else if (pc.connectionState === "failed") {
+        console.error("[Listener] ❌ Connection failed");
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("[Listener] ICE connection state:", pc.iceConnectionState);
     };
 
     peerConnectionRef.current = pc;
@@ -256,19 +191,26 @@ const ListenerPageContent = () => {
 
   const sendOffer = useCallback(async (pc: RTCPeerConnection) => {
     try {
+      console.log("[Listener] Creating offer...");
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: false,
       });
       
+      console.log("[Listener] Setting local description...");
       await pc.setLocalDescription(offer);
       
+      console.log("[Listener] Sending offer to Firebase...");
       await set(ref(rtdb, `rooms/${roomId}/webrtc/offers/${listenerIdRef.current}`), {
         offer: { type: offer.type, sdp: offer.sdp },
         from: listenerIdRef.current,
         timestamp: Date.now(),
       });
-    } catch {}
+      
+      console.log("[Listener] ✅ Offer sent successfully");
+    } catch (err) {
+      console.error("[Listener] ❌ Error sending offer:", err);
+    }
   }, [roomId]);
 
   const joinPodcast = useCallback(async () => {
@@ -277,6 +219,7 @@ const ListenerPageContent = () => {
       return;
     }
     
+    console.log("[Listener] 📡 Joining podcast:", roomId);
     setStatus("connecting");
     
     try {
@@ -286,40 +229,34 @@ const ListenerPageContent = () => {
       const roomSnapshot = await getDoc(roomRef);
       
       if (!roomSnapshot.exists()) {
+        console.error("[Listener] ❌ Room not found");
         setStatus("not_found");
         return;
       }
       
       const roomData = roomSnapshot.data();
       if (roomData.status === "ended") {
+        console.log("[Listener] Podcast has ended");
         setStatus("ended");
         return;
       }
       
       if (!roomData.approved) {
+        console.error("[Listener] ❌ Room not approved");
         setStatus("not_found");
         return;
       }
       
       setRoomTitle(roomData.title || "Live Podcast");
       
-      // Fetch host name from podcast data
-      const fetchedHostName = roomData.hostName || "Host";
-      setHostName(fetchedHostName);
-      
-      // Fetch listener's real name
-      const userId = searchParams.get("userId") || listenerIdRef.current;
-      const fetchedListenerName = await fetchUserName(userId);
-      setListenerName(fetchedListenerName);
-      
       const rtdbRoomRef = ref(rtdb, `rooms/${roomId}`);
       const rtdbSnapshot = await get(rtdbRoomRef);
       
       if (!rtdbSnapshot.exists()) {
+        console.log("[Listener] Creating RTDB room entry");
         await set(rtdbRoomRef, {
           title: roomData.title,
           hostId: roomData.hostId,
-          hostName: fetchedHostName,
           status: "live",
           approved: true,
           createdAt: Date.now(),
@@ -330,28 +267,47 @@ const ListenerPageContent = () => {
       
       const listenerData: Participant = {
         id: listenerIdRef.current,
-        name: fetchedListenerName,
+        name: generateListenerName(),
         role: "listener",
         avatar: "👤",
         joinedAt: Date.now(),
       };
       
+      console.log("[Listener] Adding listener to participants");
       await set(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}`), listenerData);
+      
       await sendOffer(pc);
+      
       setStatus("connected");
+      console.log("[Listener] ✅ Successfully joined podcast");
       
       setTimeout(() => initializeAudio(), 1000);
-    } catch (error) {
-      console.error("Error joining podcast:", error);
+    } catch (err) {
+      console.error("[Listener] ❌ Join error:", err);
       setStatus("error");
     }
-  }, [roomId, createPeerConnection, sendOffer, initializeAudio, fetchUserName, searchParams]);
+  }, [roomId, createPeerConnection, generateListenerName, sendOffer, initializeAudio]);
 
   useEffect(() => {
     if (roomId && status === "idle") {
       joinPodcast();
     }
   }, [roomId, status, joinPodcast]);
+
+  const sendEmojiReaction = useCallback(async (emoji: string) => {
+    if (!roomId) return;
+    
+    console.log("[Listener] 😊 Sending emoji reaction:", emoji);
+    
+    await set(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}/emoji`), emoji);
+    await set(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}/emojiTimestamp`), Date.now());
+    
+    setShowEmojiPicker(false);
+    
+    setTimeout(async () => {
+      await set(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}/emoji`), null);
+    }, 3000);
+  }, [roomId]);
 
   useEffect(() => {
     if (!roomId || status !== "connected" || !peerConnectionRef.current) return;
@@ -363,23 +319,39 @@ const ListenerPageContent = () => {
       const data = snapshot.val();
       const pc = peerConnectionRef.current;
       
-      if (pc.signalingState !== "have-local-offer" || hasSetRemoteDescRef.current) return;
+      if (pc.signalingState !== "have-local-offer") {
+        console.log(`[Listener] Cannot set remote description, state is: ${pc.signalingState}`);
+        return;
+      }
+      
+      if (hasSetRemoteDescRef.current) {
+        console.log("[Listener] Remote description already set, skipping");
+        return;
+      }
       
       try {
+        console.log("[Listener] Setting remote description (answer)");
         await pc.setRemoteDescription(new RTCSessionDescription({
           type: data.type,
           sdp: data.sdp,
         }));
         
         hasSetRemoteDescRef.current = true;
+        console.log("[Listener] ✅ Remote description set successfully");
         
+        console.log(`[Listener] Adding ${pendingIceCandidatesRef.current.length} pending ICE candidates`);
         for (const candidate of pendingIceCandidatesRef.current) {
           try {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } catch {}
+          } catch (err) {
+            console.error("[Listener] Error adding pending ICE candidate:", err);
+          }
         }
         pendingIceCandidatesRef.current = [];
-      } catch {}
+        
+      } catch (err) {
+        console.error("[Listener] ❌ Error setting remote description:", err);
+      }
     });
     
     return () => unsubscribe();
@@ -404,13 +376,17 @@ const ListenerPageContent = () => {
       };
       
       if (!pc.remoteDescription) {
+        console.log("[Listener] Queueing ICE candidate (no remote description yet)");
         pendingIceCandidatesRef.current.push(candidate);
         return;
       }
       
       try {
+        console.log("[Listener] Adding ICE candidate");
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch {}
+      } catch (err) {
+        console.error("[Listener] Error adding ICE candidate:", err);
+      }
     });
     
     return () => unsubscribe();
@@ -424,7 +400,18 @@ const ListenerPageContent = () => {
       if (snapshot.exists()) {
         const participantsList: Participant[] = [];
         snapshot.forEach((child) => {
-          participantsList.push(child.val() as Participant);
+          const participantData = child.val() as Participant;
+          participantsList.push(participantData);
+          
+          // Auto-clear emoji after 3 seconds
+          if (participantData.emoji && participantData.emojiTimestamp) {
+            const timeSinceEmoji = Date.now() - participantData.emojiTimestamp;
+            if (timeSinceEmoji < 3000) {
+              setTimeout(() => {
+                set(ref(rtdb, `rooms/${roomId}/participants/${participantData.id}/emoji`), null);
+              }, 3000 - timeSinceEmoji);
+            }
+          }
         });
         setParticipants(participantsList);
       }
@@ -433,6 +420,7 @@ const ListenerPageContent = () => {
     const statusRef = ref(rtdb, `rooms/${roomId}/status`);
     const unsubStatus = onValue(statusRef, (snapshot) => {
       if (snapshot.exists() && snapshot.val() === "ended") {
+        console.log("[Listener] Podcast ended by host");
         setStatus("ended");
       }
     });
@@ -444,9 +432,12 @@ const ListenerPageContent = () => {
   }, [roomId, status]);
 
   const handleLeaveCall = useCallback(async () => {
+    console.log("[Listener] Leaving call...");
+    
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
+      console.log("[Listener] Closed peer connection");
     }
 
     audioElementsRef.current.forEach((audio) => {
@@ -455,10 +446,12 @@ const ListenerPageContent = () => {
       audio.remove();
     });
     audioElementsRef.current.clear();
+    remoteStreamsRef.current.clear();
     
     if (roomId) {
       await remove(ref(rtdb, `rooms/${roomId}/participants/${listenerIdRef.current}`));
       await remove(ref(rtdb, `rooms/${roomId}/webrtc/${listenerIdRef.current}`));
+      console.log("[Listener] Removed from participants");
     }
     
     router.push("/LivePodcast");
@@ -472,18 +465,24 @@ const ListenerPageContent = () => {
       if (!newMutedState) {
         try {
           await remoteAudioRef.current.play();
-        } catch {}
+          console.log("[Listener] 🔊 Main audio unmuted");
+        } catch (err) {
+          console.error("[Listener] Error playing audio:", err);
+        }
+      } else {
+        console.log("[Listener] 🔇 Main audio muted");
       }
     }
     
     audioElementsRef.current.forEach((audio) => {
       audio.muted = newMutedState;
       if (!newMutedState) {
-        audio.play().catch(() => {});
+        audio.play().catch(err => console.log("[Listener] Audio play blocked:", err));
       }
     });
     
     setIsAudioMuted(newMutedState);
+    console.log(`[Listener] 🔊 All audio ${newMutedState ? 'muted' : 'unmuted'}`);
     
     if (!audioInitialized) {
       setAudioInitialized(true);
@@ -524,6 +523,7 @@ const ListenerPageContent = () => {
           {status === "not_found" && (
             <>
               <p className="text-red-600 text-lg mb-4 font-semibold">Room not found</p>
+              <p className="text-sm text-gray-500 mb-4">Room ID: {roomId}</p>
               <button
                 onClick={() => router.push("/LivePodcast")}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition"
@@ -554,6 +554,7 @@ const ListenerPageContent = () => {
           {status === "ended" && (
             <>
               <p className="text-yellow-600 text-lg mb-4 font-semibold">Podcast has ended</p>
+              <p className="text-sm text-gray-500 mb-4">Thanks for listening!</p>
               <button
                 onClick={() => router.push("/LivePodcast")}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition"
@@ -576,37 +577,6 @@ const ListenerPageContent = () => {
       
       <div ref={audioContainerRef} className="hidden" />
       
-      {showEmojiPicker && (
-        <div 
-          onClick={() => setShowEmojiPicker(false)} 
-          className="fixed inset-0 z-40"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="fixed bottom-32 left-1/2 transform -translate-x-1/2 bg-white rounded-2xl shadow-2xl p-6 border-2 border-gray-200 z-50 w-96"
-          >
-            <div className="grid grid-cols-4 gap-4">
-              {EMOJI_OPTIONS.map((option) => (
-                <button
-                  key={option.emoji}
-                  onClick={() => sendReaction(option.emoji)}
-                  disabled={isReactionAnimating}
-                  className={`flex flex-col items-center p-4 rounded-lg transition ${
-                    isReactionAnimating 
-                      ? 'opacity-50 cursor-not-allowed' 
-                      : 'hover:bg-gray-100 cursor-pointer'
-                  }`}
-                  title={option.label}
-                >
-                  <span className="text-4xl mb-1">{option.emoji}</span>
-                  <span className="text-xs text-gray-600">{option.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-      
       <div className="bg-white rounded-xl shadow-xl overflow-hidden">
         <div className="p-6 bg-gradient-to-r from-purple-50 to-pink-50">
           <div className="text-center">
@@ -614,7 +584,7 @@ const ListenerPageContent = () => {
             <div className="flex justify-center items-center flex-wrap gap-3 text-sm">
               <span className="flex items-center space-x-1 bg-red-100 px-3 py-1 rounded-full text-red-800 font-semibold">
                 <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse"></span>
-                <span>🔴 LIVE</span>
+                <span>LIVE</span>
               </span>
               <span className="text-gray-600 font-medium">
                 {participants.length} participant{participants.length !== 1 ? 's' : ''}
@@ -627,6 +597,7 @@ const ListenerPageContent = () => {
                 {connectionState}
               </span>
             </div>
+            <p className="text-xs text-gray-400 mt-2">Room: {roomId}</p>
             {!audioInitialized && (
               <p className="text-sm text-orange-600 mt-3 animate-pulse font-medium">
                 🔊 Click anywhere to enable audio
@@ -637,13 +608,16 @@ const ListenerPageContent = () => {
 
         <div className="p-8">
           {hostParticipant && (
-            <div className="mb-8 text-center">
-              <div className="w-40 h-40 mx-auto mb-4 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-7xl shadow-2xl">
+            <div className="mb-8 text-center relative">
+              <div className="w-40 h-40 mx-auto mb-4 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-7xl shadow-2xl relative">
                 {hostParticipant.avatar}
+                {hostParticipant.emoji && (
+                  <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-5xl animate-bounce">
+                    {hostParticipant.emoji}
+                  </div>
+                )}
               </div>
-              <h2 className="text-2xl font-bold text-gray-800">
-                {hostName || hostParticipant.name}
-              </h2>
+              <h2 className="text-2xl font-bold text-gray-800">{hostParticipant.name}</h2>
               <p className="text-blue-600 font-semibold text-lg">Host</p>
             </div>
           )}
@@ -656,21 +630,15 @@ const ListenerPageContent = () => {
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
                 {listenerParticipants.map((p) => (
                   <div key={p.id} className="flex flex-col items-center relative">
-                    <div className="relative inline-block">
-                      <div className="w-14 h-14 rounded-full bg-gray-300 text-gray-700 flex items-center justify-center text-xl">
-                        {p.avatar}
-                      </div>
-                      {reactions.get(p.id)?.map((reaction) => (
-                        <div
-                          key={reaction.id}
-                          className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-3xl z-20"
-                          style={{ animation: "float-up 3s ease-out forwards" }}
-                        >
-                          {reaction.emoji}
+                    <div className="w-14 h-14 rounded-full flex items-center justify-center text-xl relative bg-gray-300 text-gray-700">
+                      {p.avatar}
+                      {p.emoji && (
+                        <div className="absolute -top-6 left-1/2 transform -translate-x-1/2 text-3xl animate-bounce">
+                          {p.emoji}
                         </div>
-                      ))}
+                      )}
                       {p.id === listenerIdRef.current && (
-                        <div className="absolute -bottom-1 right-0 bg-purple-500 text-white text-xs px-2 rounded-full z-10">
+                        <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 bg-purple-500 text-white text-xs px-2 rounded-full">
                           You
                         </div>
                       )}
@@ -686,27 +654,47 @@ const ListenerPageContent = () => {
         </div>
 
         <div className="p-6 bg-gradient-to-b from-gray-50 to-gray-100 border-t">
-          <div className="flex justify-center items-center space-x-4">
+          <div className="flex justify-center items-center space-x-4 mb-4">
             <button
               onClick={toggleAudioOutput}
-              className={`p-5 rounded-full transition-all shadow-lg transform hover:scale-110 ${isAudioMuted ? "bg-gray-600 hover:bg-gray-700" : "bg-green-600 hover:bg-green-700"} text-white`}
-              title={isAudioMuted ? "Unmute speakers" : "Mute speakers"}
+              className={`p-5 rounded-full transition-all shadow-lg transform hover:scale-110 ${
+                isAudioMuted ? "bg-gray-600 hover:bg-gray-700" : "bg-green-600 hover:bg-green-700"
+              } text-white`}
+              title={isAudioMuted ? "Unmute speakers (hear host)" : "Mute speakers"}
             >
               {isAudioMuted ? <FaVolumeMute size={28} /> : <FaVolumeUp size={28} />}
             </button>
 
-            <button
-              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              disabled={isReactionAnimating}
-              className={`p-5 rounded-full transition-all shadow-lg transform ${
-                isReactionAnimating 
-                  ? 'bg-gray-400 cursor-not-allowed' 
-                  : 'bg-yellow-500 hover:bg-yellow-600 hover:scale-110'
-              } text-white`}
-              title="Send reaction"
-            >
-              <span className="text-3xl">😊</span>
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                className="p-5 bg-yellow-500 hover:bg-yellow-600 text-white rounded-full transition-all shadow-lg transform hover:scale-110 text-2xl"
+                title="Send reaction"
+              >
+                😊
+              </button>
+              
+              {showEmojiPicker && (
+                <div className="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-xl p-3 grid grid-cols-4 gap-2 z-10 w-80">
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      disabled={reactionCooldown}
+                      onClick={() => {
+                        if (!reactionCooldown) {
+                          sendEmojiReaction(emoji);
+                          setReactionCooldown(true);
+                          setTimeout(() => setReactionCooldown(false), 3000);
+                        }
+                      }}
+                      className="text-3xl hover:scale-125 transition-transform p-2 hover:bg-gray-100 rounded disabled:opacity-50"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button
               onClick={handleLeaveCall}
@@ -717,13 +705,13 @@ const ListenerPageContent = () => {
             </button>
           </div>
 
-          <div className="text-center mt-4">
+          <div className="text-center">
             <p className="text-sm font-semibold text-gray-700">
-              👂 Listening as {listenerName}
+              👂 Listening Mode
             </p>
             {audioInitialized && !isAudioMuted && (
               <p className="text-xs text-green-600 mt-2 font-medium">
-                🔊 Speakers enabled
+                🔊 Speakers enabled - hearing host
               </p>
             )}
             {isAudioMuted && (
@@ -739,23 +727,6 @@ const ListenerPageContent = () => {
           className="hidden"
         />
       </div>
-
-      <style jsx>{`
-        @keyframes float-up {
-          0% {
-            opacity: 1;
-            transform: translate(-50%, 0) scale(1);
-          }
-          50% {
-            opacity: 1;
-            transform: translate(-50%, -30px) scale(1.2);
-          }
-          100% {
-            opacity: 0;
-            transform: translate(-50%, -60px) scale(0.8);
-          }
-        }
-      `}</style>
     </div>
   );
 };

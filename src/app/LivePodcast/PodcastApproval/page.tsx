@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from "react";
 import { db } from "@/app/Firebase/firebase";
-import { getDatabase, ref, set } from "firebase/database";
 import {
   collection,
   getDocs,
@@ -27,9 +26,6 @@ interface Podcast {
   date: string;
   time: string;
   userUID: string;
-  description?: string;
-  category?: string;
-  tags?: string[];
 }
 
 const PodcastApproval = () => {
@@ -55,13 +51,6 @@ const PodcastApproval = () => {
     const timestamp = Date.now().toString(36);
     const random = Math.random().toString(36).substring(2, 9);
     return `host_${timestamp}_${random}`;
-  };
-
-  // Generate WebRTC Room ID
-  const generateWebRTCRoomId = (): string => {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substring(2, 7);
-    return `podcast_${timestamp}_${random}`;
   };
 
   const fetchPendingPodcasts = async () => {
@@ -116,81 +105,54 @@ const PodcastApproval = () => {
       // Generate unique IDs
       const roomId = generateRoomId();
       const hostId = generateHostId();
-      const webrtcRoomId = generateWebRTCRoomId();
       const hostName = podcastData.speaker || "Unknown Host";
 
-      console.log("Approving podcast with:", { roomId, hostId, webrtcRoomId, hostName });
+      console.log("Creating room with:", { roomId, hostId, hostName });
 
-      // Create a document in the "podcasts" collection with the approved data
-      await setDoc(doc(db, "podcasts", roomId), {
+      // 1. Add to approved podcasts collection
+
+      // 2. Create room document in "rooms" collection
+      await setDoc(doc(db, "rooms", roomId), {
         roomId: roomId,
         hostId: hostId,
         hostName: hostName,
-        speaker: podcastData.speaker,
         podcastId: podcastData.podcastId,
         title: podcastData.title,
+        speaker: podcastData.speaker,
         topic: podcastData.topic,
-        description: podcastData.description || "",
-        category: podcastData.category || "General",
-        tags: podcastData.tags || [],
         hostUID: podcastData.userUID,
-        userUID: podcastData.userUID,
         scheduledDate: podcastData.date,
         scheduledTime: podcastData.time,
-        date: podcastData.date,
-        time: podcastData.time,
-        createdAt: Date.now(),
-        status: "approved",
-        approved: true,
+        createdAt: serverTimestamp(),
+        status: "scheduled",
+        isActive: true,
+        ended: false,
         participantCount: 0,
         maxParticipants: 50,
-        isPublic: true,
-        webrtcRoomId: webrtcRoomId,
-        // WebRTC fields - will be populated when host starts the podcast
-        webrtc: {
-          offer: null,
-          type: null,
-        },
-        startedAt: null,
-        endedAt: null,
       });
 
-      // Create the room in Realtime Database for WebRTC signaling
-      const rtdb = getDatabase();
-      const rtdbRoomRef = ref(rtdb, `podcastRooms/${webrtcRoomId}`);
-      
-      await set(rtdbRoomRef, {
-        roomId: roomId,
-        webrtcRoomId: webrtcRoomId,
-        hostId: hostId,
-        hostName: hostName,
-        speaker: podcastData.speaker,
-        title: podcastData.title,
-        topic: podcastData.topic,
-        status: "waiting", // waiting for host to start
-        createdAt: Date.now(),
-        participants: {},
-        webrtc: {
-          offer: null,
-          type: null,
-          iceCandidates: [],
-        },
-        hostJoined: false,
-        isLive: false,
+      // 3. Create host participant in room/participants subcollection
+      const hostParticipantRef = doc(db, `rooms/${roomId}/participants`, hostId);
+      await setDoc(hostParticipantRef, {
+        userId: hostId,
+        userName: hostName,
+        role: "host",
+        joinedAt: Date.now(),
+        isActive: false, // Will be set to true when host actually joins
+        canSpeak: true,
       });
 
-      console.log("RTDB room created at:", `podcastRooms/${webrtcRoomId}`);
+      console.log("✅ Room created successfully:", roomId);
 
-      // Remove from pending collection
+      // 4. Remove from pending collection
       await deleteDoc(podcastRef);
 
       alert(
         `✅ Podcast approved successfully!\n\n` +
-          `Room ID: ${roomId}\n` +
-          `Host ID: ${hostId}\n` +
-          `WebRTC Room ID: ${webrtcRoomId}\n` +
-          `Host Name: ${hostName}\n\n` +
-          `The podcast has been moved to the approved podcasts collection and is ready for the host to start.`
+        `Room ID: ${roomId}\n` +
+        `Host ID: ${hostId}\n` +
+        `Host Name: ${hostName}\n\n` +
+        `The host can now start their podcast.`
       );
 
       fetchPendingPodcasts();
@@ -224,9 +186,7 @@ const PodcastApproval = () => {
   return (
     <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] overflow-auto">
       <div className="mb-6">
-        <h1 className="text-3xl font-semibold text-gray-800">
-          Podcast Approval
-        </h1>
+        <h1 className="text-3xl font-semibold text-gray-800">Podcast Approval</h1>
         <p className="text-lg text-gray-600 mt-1">
           Review and approve podcast requests from hosts.
         </p>
@@ -270,9 +230,7 @@ const PodcastApproval = () => {
 
                       <div className="flex items-center text-gray-600">
                         <span className="mr-2">👤</span>
-                        <span className="truncate">
-                          Speaker: {pod.speaker}
-                        </span>
+                        <span className="truncate">Speaker: {pod.speaker}</span>
                       </div>
 
                       <div className="flex items-center text-gray-500">
@@ -287,34 +245,6 @@ const PodcastApproval = () => {
                       <div className="mt-2 text-sm text-gray-600">
                         <span className="mr-2">💬</span>
                         <span>Topic: {pod.topic}</span>
-                      </div>
-                    )}
-
-                    {pod.description && (
-                      <div className="mt-2 text-sm text-gray-600">
-                        <span className="mr-2">📝</span>
-                        <span>Description: {pod.description}</span>
-                      </div>
-                    )}
-
-                    {pod.category && (
-                      <div className="mt-2 text-sm text-gray-600">
-                        <span className="mr-2">🏷️</span>
-                        <span>Category: {pod.category}</span>
-                      </div>
-                    )}
-
-                    {pod.tags && pod.tags.length > 0 && (
-                      <div className="mt-2 flex items-center flex-wrap gap-1">
-                        <span className="text-sm text-gray-600 mr-2">🔖 Tags:</span>
-                        {pod.tags.map((tag, index) => (
-                          <span
-                            key={index}
-                            className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full"
-                          >
-                            #{tag}
-                          </span>
-                        ))}
                       </div>
                     )}
 
@@ -352,9 +282,7 @@ const PodcastApproval = () => {
             <div className="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-4 flex items-center justify-center text-2xl">
               ✓
             </div>
-            <p className="text-gray-500 text-lg">
-              No pending podcast requests
-            </p>
+            <p className="text-gray-500 text-lg">No pending podcast requests</p>
             <p className="text-gray-400 text-sm mt-2">
               All podcast requests have been reviewed
             </p>
