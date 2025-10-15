@@ -110,13 +110,7 @@ const PodcastApproval = () => {
       console.log("Creating room with:", { roomId, hostId, hostName });
 
       // 1. Add to approved podcasts collection
-      const today = new Date();
-      const scheduledDate = new Date(podcastData.date);
       // Compare only the date parts
-      const isToday =
-        scheduledDate.getFullYear() === today.getFullYear() &&
-        scheduledDate.getMonth() === today.getMonth() &&
-        scheduledDate.getDate() === today.getDate();
 
       await setDoc(doc(db, "podcasts", podcastData.podcastId), {
         podcastId: podcastData.podcastId,
@@ -126,7 +120,7 @@ const PodcastApproval = () => {
         date: podcastData.date,
         time: podcastData.time,
         userUID: podcastData.userUID,
-        status: isToday ? "live" : "waiting",
+        status: "waiting",
         approved: true,
         roomId: roomId,
         hostId: hostId,
