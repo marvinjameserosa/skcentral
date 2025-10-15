@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Navbar from "../../../Components/Navbar";
 
-const PDBFileViewer = () => {
+// Separate component that uses useSearchParams
+const PDBFileViewerContent = () => {
   const searchParams = useSearchParams();
   
   const [pdfFiles, setPdfFiles] = useState<{
@@ -363,6 +364,22 @@ const PDBFileViewer = () => {
 
       <Navbar />
     </div>
+  );
+};
+
+// Main component wrapped with Suspense
+const PDBFileViewer = () => {
+  return (
+    <Suspense fallback={
+      <div className="ml-[260px] min-h-screen p-6 bg-[#e7f0fa] flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin text-4xl mb-4">⏳</div>
+          <p className="text-gray-600">Loading PDF Viewer...</p>
+        </div>
+      </div>
+    }>
+      <PDBFileViewerContent />
+    </Suspense>
   );
 };
 
