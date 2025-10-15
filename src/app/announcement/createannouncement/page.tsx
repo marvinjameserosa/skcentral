@@ -14,6 +14,7 @@ import { User, getAuth } from "firebase/auth";
 import Navbar from "@/app/Components/Navbar";
 import RequireAuth from "@/app/Components/RequireAuth";
 import { recordActivityLog } from "@/app/Components/recordActivityLog";
+import Link from "next/link";
 
 interface FormData {
   title: string;
@@ -82,8 +83,8 @@ const CreateAnnouncementContent = ({ user }: { user: User }) => {
   const barangayOptions = [
     "Barangka",
     "Calumpang",
-    "Concepcion I (Uno)",
-    "Concepcion II (Dos)",
+    "Concepcion Uno",
+    "Concepcion Dos",
     "Fortune",
     "Industrial Valley Complex",
     "Jesus de la Peña",
@@ -377,15 +378,25 @@ const CreateAnnouncementContent = ({ user }: { user: User }) => {
       <Navbar />
 
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h1 className="text-3xl font-semibold text-black">Create Announcement</h1>
-          <p className="text-lg text-gray-700 mt-1">Create a new announcement to notify the community based on selected filters.</p>
+      <header className="mb-2">
+      <Link href="/announcement">
+        <div className="cursor-pointer flex flex-col">
+          <div className="flex items-center space-x-2">
+        <Image
+          src="/ArrowBackIcon.svg"
+          alt="Arrow Back"
+          width={24}
+          height={24}
+          style={{ fill: '#11459B' }}
+        />
+        <h1 className="text-3xl font-semibold text-gray-800">Create Announcement</h1>
+          </div>
+          <p className="text-lg text-gray-600 mt-2">
+        
+          </p>The hub that connects kabataan with important updates and announcements from the SK Federation.
         </div>
-        <button onClick={handleCancel} className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg" disabled={isPublishing}>
-          ← Back
-        </button>
-      </div>
+      </Link>
+      </header>
 
       {/* Filter Audience Section */}
       <div className="bg-white rounded-xl shadow-lg p-6 flex flex-col gap-6">
@@ -486,19 +497,14 @@ const CreateAnnouncementContent = ({ user }: { user: User }) => {
               <button type="button" onClick={removeImage} className="absolute top-0 right-0 bg-red-600 text-white rounded-full px-2 py-1 text-xs">×</button>
             </div>
           ) : (
-            <input type="file" accept="image/*" onChange={handleFileChange} className="block w-full text-sm text-gray-700 border border-gray-300 rounded-lg cursor-pointer p-2" />
+            <div className="flex justify-center items-center">
+              <label className="cursor-pointer p-2 bg-white border border-gray-300 rounded-lg w-full text-left">
+          <span className="bg-gray-800 text-white px-4 py-2 rounded-md">Choose File</span>
+          <input type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+              </label>
+            </div>
           )}
         </div>
-
-        {/* Validation Errors */}
-        {validationErrors.length > 0 && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-            <h4 className="text-red-700 font-semibold text-sm mb-2">Please fix the following:</h4>
-            <ul className="list-disc list-inside text-sm text-red-600">
-              {validationErrors.map((err, idx) => <li key={idx}>{err}</li>)}
-            </ul>
-          </div>
-        )}
 
         {/* Actions */}
         <div className="flex justify-end gap-3">

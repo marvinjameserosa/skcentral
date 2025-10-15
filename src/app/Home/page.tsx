@@ -379,8 +379,8 @@ const YouthInsightsDashboard: React.FC = () => {
                 <option value="All">All</option>
                 <option value="Barangka">Barangka</option>
                 <option value="Calumpang">Calumpang</option>
-                <option value="Concepcion II (Dos)">Concepcion Dos</option>
-                <option value="Concepcion I (Uno)">Concepcion Uno</option>
+                <option value="Concepcion Dos">Concepcion Dos</option>
+                <option value="Concepcion Uno">Concepcion Uno</option>
                 <option value="Fortune">Fortune</option>
                 <option value="Industrial Valley Complex (IVC)">Industrial Valley Complex (IVC)</option>
                 <option value="Jesus Dela Peña">Jesus Dela Peña</option>

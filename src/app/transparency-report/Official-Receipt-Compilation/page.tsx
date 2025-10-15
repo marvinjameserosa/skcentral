@@ -6,14 +6,17 @@ import Navbar from "../../Components/Navbar";
 import { jsPDF } from "jspdf";
 
 // Firebase
-import { db, storage } from "@/app/Firebase/firebase";
+import { db, storage, auth } from "@/app/Firebase/firebase";
 import {
   collection,
   addDoc,
   serverTimestamp,
   getDocs,
+  query,
+  where,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { useAuthState } from "react-firebase-hooks/auth";
 
 interface Entry {
   id: number;
@@ -35,6 +38,8 @@ const TransparencyReport = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<string>("");
+  const [compiledBy, setCompiledBy] = useState("");
+  const [user] = useAuthState(auth);
   const router = useRouter();
 
   useEffect(() => {
@@ -42,7 +47,7 @@ const TransparencyReport = () => {
     fetchEvents();
   }, []);
 
-  // Fetch events from Firestore (using "title" field)
+  // Fetch events from Firestore
   const fetchEvents = async () => {
     try {
       const querySnapshot = await getDocs(collection(db, "events"));
@@ -59,6 +64,36 @@ const TransparencyReport = () => {
       console.error("Error fetching events:", err);
     }
   };
+
+  // Fetch user name from adminUsers collection
+  useEffect(() => {
+    const fetchUserName = async () => {
+      if (user && user.uid) {
+        try {
+          const q = query(collection(db, "adminUsers"), where("uid", "==", user.uid));
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+            const userDoc = querySnapshot.docs[0];
+            const userData = userDoc.data();
+            const userName = userData.name || "Unknown User";
+            setCompiledBy(userName);
+            console.log("Fetched user name:", userName);
+          } else {
+            console.warn("User not found in adminUsers collection");
+            setCompiledBy("Unknown User");
+          }
+        } catch (error) {
+          console.error("Error fetching user name from adminUsers:", error);
+          setCompiledBy("Unknown User");
+        }
+      } else {
+        setCompiledBy("Unknown User");
+      }
+    };
+
+    fetchUserName();
+  }, [user]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, id: number) => {
     const file = e.target.files?.[0] || null;
@@ -113,6 +148,55 @@ const TransparencyReport = () => {
     });
   };
 
+  // Helper function to compress image
+  const compressImage = (file: File, maxSizeKB: number = 800): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Calculate new dimensions to maintain aspect ratio
+          let width = img.width;
+          let height = img.height;
+          const maxDimension = 1200; // Max width or height
+          
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = (height / width) * maxDimension;
+              width = maxDimension;
+            } else {
+              width = (width / height) * maxDimension;
+              height = maxDimension;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Start with quality 0.7 and adjust if needed
+          let quality = 0.7;
+          let compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          
+          // Check size and reduce quality if needed
+          while (compressedDataUrl.length > maxSizeKB * 1024 * 1.37 && quality > 0.1) {
+            quality -= 0.1;
+            compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          }
+          
+          resolve(compressedDataUrl);
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+    });
+  };
+
   // Page break helper
   const checkPageBreak = (
     doc: jsPDF,
@@ -127,14 +211,14 @@ const TransparencyReport = () => {
     return yPos;
   };
 
-  // Generate PDF
+  // Generate PDF with compression
   const generatePDF = async (entriesToProcess: Entry[], title: string) => {
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const doc = new jsPDF({ unit: "pt", format: "a4", compress: true });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 40;
 
-    // Logos (from /public)
+    // Logos
     try {
       const skLogoResponse = await fetch("/SKLogo.png");
       const skLogoBlob = await skLogoResponse.blob();
@@ -152,19 +236,12 @@ const TransparencyReport = () => {
     let yPos = 60;
     doc.setFont("times", "italic");
     doc.setFontSize(23);
-    doc.text("Republic of the Philippines", pageWidth / 2, yPos, {
-      align: "center",
-    });
+    doc.text("Republic of the Philippines", pageWidth / 2, yPos, { align: "center" });
 
     yPos += 23;
     doc.setFont("times", "normal");
     doc.setFontSize(14);
-    doc.text(
-      "National Capital Region, Metropolitan Manila",
-      pageWidth / 2,
-      yPos,
-      { align: "center" }
-    );
+    doc.text("National Capital Region, Metropolitan Manila", pageWidth / 2, yPos, { align: "center" });
 
     yPos += 14;
     doc.text("City of Marikina", pageWidth / 2, yPos, { align: "center" });
@@ -218,8 +295,9 @@ const TransparencyReport = () => {
 
       if (entry.file && entry.file.type.startsWith("image/")) {
         try {
-          const dataUrl = await readFileAsDataURL(entry.file);
-          const img = await loadImage(dataUrl);
+          // Compress image before adding to PDF
+          const compressedDataUrl = await compressImage(entry.file, 800);
+          const img = await loadImage(compressedDataUrl);
 
           const maxWidth = (pageWidth - margin * 2) * 0.5;
           const availableHeight = (pageHeight - yPos - margin - 40) * 0.5;
@@ -239,8 +317,8 @@ const TransparencyReport = () => {
           }
 
           doc.addImage(
-            dataUrl,
-            entry.file.type === "image/png" ? "PNG" : "JPEG",
+            compressedDataUrl,
+            "JPEG",
             x,
             yPos + 20,
             imgWidth,
@@ -270,7 +348,13 @@ const TransparencyReport = () => {
 
       yPos += 30;
     }
-
+    
+    doc.setFontSize(12);
+    doc.setFont("times", "normal");
+    doc.text(`Compiled By: ${compiledBy}`, margin, yPos);
+    yPos += 14; // Add one line space before "Noted By"
+    doc.text("Noted By: Hon. Ma. Julianna M. Santiago", margin, yPos);
+    
     return doc;
   };
 
@@ -302,6 +386,15 @@ const TransparencyReport = () => {
         events.find((ev) => ev.id === selectedEvent)?.name || "event";
       const doc = await generatePDF(entries, title);
       const pdfBlob = doc.output("blob");
+      
+      const pdfSize = pdfBlob.size;
+      console.log(`Generated PDF size: ${(pdfSize / 1024 / 1024).toFixed(2)}MB`);
+
+      // Check if PDF exceeds 5MB and warn user
+      if (pdfSize > 5 * 1024 * 1024) {
+        console.warn(`PDF size (${(pdfSize / 1024 / 1024).toFixed(2)}MB) exceeds 5MB.`);
+        alert(`Warning: PDF size is ${(pdfSize / 1024 / 1024).toFixed(2)}MB, which exceeds the 5MB target. The PDF will still be generated, but it may take longer to load.`);
+      }
 
       // Upload PDF to Firebase Storage
       const fileName = `${title}-Official-Receipt-Compilation-${Date.now()}.pdf`;
@@ -317,12 +410,17 @@ const TransparencyReport = () => {
         eventId: selectedEvent,
         title,
         fileUrl: downloadURL,
+        pdfSize: pdfSize,
+        compiledBy: compiledBy,
+        notedBy: "Hon. Ma. Julianna M. Santiago",
         createdAt: serverTimestamp(),
       });
 
       // Save to localStorage (instant preview)
       localStorage.setItem("generatedPDF", downloadURL);
 
+      alert(`Report generated successfully! PDF size: ${(pdfSize / 1024 / 1024).toFixed(2)}MB`);
+      
       router.push(
         "/transparency-report/Official-Receipt-Compilation/GeneratedOR"
       );
@@ -352,21 +450,19 @@ const TransparencyReport = () => {
               ←
             </button>
           </Link>
-          <h2 className="text-center text-3xl font-semibold">
-            Official Receipt Compilation
-          </h2>
+          <h2 className="text-center text-3xl font-semibold">Official Receipt Compilation</h2>
         </div>
 
-        <div className="p-6 space-y-6">
-          {/* Select Event */}
-          <div className="flex flex-col">
-            <label className="mb-2 font-medium text-gray-700">Select Event</label>
+        <div className="px-8 py-6 space-y-6">
+          <div>
+            <label className="block text-lg font-medium mb-2">Community Event</label>
             <select
               value={selectedEvent}
               onChange={(e) => setSelectedEvent(e.target.value)}
-              className="p-2 border border-gray-300 rounded-md text-sm font-medium"
+              className="w-full bg-gray-100 text-gray-700 px-4 py-2 rounded-md"
+              disabled={isGenerating}
             >
-              <option value="">-- Select Event --</option>
+              <option value="">-- Select an Event --</option>
               {events.map((event) => (
                 <option key={event.id} value={event.id}>
                   {event.name}
@@ -375,71 +471,94 @@ const TransparencyReport = () => {
             </select>
           </div>
 
+          <div>
+            <label className="block text-lg font-medium mb-2">Compiled By</label>
+            <input
+              type="text"
+              value={compiledBy}
+              className="w-full bg-gray-100 text-gray-700 px-4 py-2 rounded-md"
+              placeholder="Loading user name..."
+              disabled={true}
+            />
+          </div>
+
           {entries.map((entry) => (
-            <div
-              key={entry.id}
-              className="flex flex-col md:flex-row items-center gap-4"
-            >
+            <div key={entry.id} className="border-t pt-4">
+              <label className="block text-lg font-medium mb-2">Description</label>
               <input
                 type="text"
                 value={entry.description}
                 onChange={(e) => handleDescriptionChange(e, entry.id)}
-                placeholder="Purpose / Description of Payment"
-                className="p-2 border border-gray-300 rounded-md w-full md:w-1/2 text-sm font-medium"
+                className="w-full bg-gray-100 text-gray-700 px-4 py-2 rounded-md mb-2"
+                placeholder="Enter description"
+                disabled={isGenerating}
               />
 
-              <div className="w-full md:w-1/2 border border-gray-300 rounded-md h-10 flex items-center overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => fileInputRefs.current[entry.id]?.click()}
-                  className="bg-gray-200 px-5 h-full text-sm font-medium text-gray-700 hover:bg-gray-300 flex-shrink-0"
-                >
-                  Choose File
-                </button>
-                <span className="text-sm text-gray-600 px-3 truncate w-full text-left">
-                  {entry.file ? entry.file.name : "No file chosen"}
-                </span>
-                <input
-                  type="file"
-                  ref={(el) => {
-                    fileInputRefs.current[entry.id] = el;
-                  }}
-                  className="hidden"
-                  onChange={(e) => handleFileChange(e, entry.id)}
-                />
-              </div>
+              <label className="block text-lg font-medium mb-2">Upload File</label>
+              <div className="flex flex-wrap md:flex-nowrap items-center gap-2 mb-2">
+                <div className="flex flex-1 min-w-[250px]">
+                  <label className="bg-gray-300 text-black px-4 py-2 rounded-l-md text-sm cursor-pointer whitespace-nowrap">
+                    Choose File
+                    <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="hidden"
+                        ref={(el) => { fileInputRefs.current[entry.id] = el; }}
+                        onChange={(e) => handleFileChange(e, entry.id)}
+                        disabled={isGenerating}
+                      />
+                  </label>
+                  <div className="flex-1 bg-white border border-gray-300 border-l-0 px-3 py-[0.6rem] text-sm text-gray-800 rounded-r-md truncate">
+                    {entry.file ? entry.file.name : "No file chosen"}
+                  </div>
+                </div>
 
-              <button
-                onClick={() => deleteEntry(entry.id)}
-                className="bg-red-500 text-white px-4 py-2 rounded-md h-fit"
-              >
-                Delete
-              </button>
+                <div className="flex gap-2 mt-2 md:mt-0">
+                  <button
+                    onClick={addEntry}
+                    disabled={isGenerating}
+                    className="bg-[#1167B1] text-white text-sm px-4 py-2 rounded hover:opacity-90 disabled:opacity-50"
+                  >
+                    Add New
+                  </button>
+                  <button
+                    onClick={() => deleteEntry(entry.id)}
+                    disabled={entries.length === 1 || isGenerating}
+                    className={`text-sm px-4 py-2 rounded ${
+                      entries.length === 1 || isGenerating
+                        ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                        : "bg-[#CE1226] text-white hover:opacity-90"
+                    }`}
+                  >
+                    Delete Entry
+                  </button>
+                </div>
+              </div>
             </div>
           ))}
 
-          <hr className="border-t border-gray-300 my-4" />
+          <div className="bg-blue-50 p-4 rounded-md">
+            <h3 className="font-medium text-blue-800 mb-2">PDF Generation Info:</h3>
+            <ul className="text-sm text-blue-700 space-y-1">
+              <li>• Images will be compressed to reduce PDF file size</li>
+              <li>• Target PDF size is under 5MB for optimal performance</li>
+              <li>• Original files will be preserved in their original quality</li>
+              <li>• Generation may take 1-2 minutes depending on the number of entries</li>
+            </ul>
+          </div>
 
-          <div className="flex flex-wrap gap-4 justify-center">
+          <div className="flex justify-center pt-6 border-t">
             <button
-              onClick={addEntry}
-              className="bg-yellow-500 text-white px-4 py-2 rounded-md"
-              disabled={isGenerating}
-            >
-              New Item
-            </button>
-            <button
+              className="bg-[#1167B1] text-white px-6 py-2 rounded-md hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={addAllEntries}
-              className={`px-4 py-2 rounded-md text-white ${
-                isGenerating ? "bg-gray-400" : "bg-blue-500"
-              }`}
               disabled={isGenerating}
             >
-              {isGenerating ? "Generating PDF..." : "Add All Entries"}
+              {isGenerating ? "Generating PDF..." : "Generate Report"}
             </button>
           </div>
         </div>
       </div>
+
       <Navbar />
     </div>
   );

@@ -21,13 +21,15 @@ import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage
 import { getAuth, type User } from "firebase/auth";
 import Navbar from "../Components/Navbar";
 import RequireAuth from "@/app/Components/RequireAuth";
-import { recordActivityLog } from "@/app/Components/recordActivityLog"; 
+import { recordActivityLog } from "@/app/Components/recordActivityLog";
+
 interface FormData {
-  title: string;
-  desc: string;
-  company: string;
-  companyEmail: string;
-  eligibility: string;
+  scholarshipName: string;
+  description: string;
+  requirements: string;
+  provider: string;
+  providerEmail: string;
+  amount: string;
   deadline: string;
   location: string;
   img: string;
@@ -46,14 +48,14 @@ interface LoadingStates {
   archiving: boolean;
 }
 
-
 interface ScholarshipType {
   id: string;
-  title: string;
-  desc: string;
-  company: string;
-  companyEmail: string;
-  eligibility: string;
+  scholarshipName: string;
+  description: string;
+  requirements: string;
+  provider: string;
+  providerEmail: string;
+  amount: string;
   deadline: string;
   location: string;
   img: string;
@@ -63,11 +65,12 @@ interface ScholarshipType {
 }
 
 const DEFAULT_FORM_VALUES: FormData = {
-  title: "",
-  desc: "",
-  company: "",
-  companyEmail: "",
-  eligibility: "",
+  scholarshipName: "",
+  description: "",
+  requirements: "",
+  provider: "",
+  providerEmail: "",
+  amount: "",
   deadline: "",
   location: "",
   img: "",
@@ -78,36 +81,35 @@ export default function ScholarshipListing() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [fileName, setFileName] = useState<string>("");
-  
+
   // Data state
   const [scholarshipListings, setScholarshipListings] = useState<ScholarshipType[]>([]);
   const [archivedScholarships, setArchivedScholarships] = useState<ScholarshipType[]>([]);
-  
+
   // Filter and search state
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'expired' | 'archived'>('active');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'deadline'>('newest');
-  
+
   // Form state
   const [form, setForm] = useState<FormData>({ ...DEFAULT_FORM_VALUES });
   const [formErrors, setFormErrors] = useState<FormErrors>({});
   const [isEditing, setIsEditing] = useState<boolean>(false);
-  
+
   // Modal state
   const [showConfirmationModal, setShowConfirmationModal] = useState<boolean>(false);
   const [showSuccessModal, setShowSuccessModal] = useState<boolean>(false);
   const [actionType, setActionType] = useState<'publish' | 'save' | 'delete' | 'archive' | null>(null);
   const [modalScholarshipId, setModalScholarshipId] = useState<string | null>(null);
   const [confirmMessage, setConfirmMessage] = useState<string>("");
-  
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [itemsPerPage, setItemsPerPage] = useState<number>(8);
-  
+
   // User state
   const [user, setUser] = useState<User | null>(null);
-  const [] = useState<string>("");
-  
+
   // Loading state
   const [loadingStates, setLoadingStates] = useState<LoadingStates>({
     fetching: false,
@@ -125,11 +127,9 @@ export default function ScholarshipListing() {
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-
-        // Log page access with specific page name
         await recordActivityLog({
           action: "View Page",
-          details: "User accessed the Scholarship Listing page", // Specific page name added here
+          details: "User accessed the Scholarship Listing page",
           userId: currentUser.uid,
           userEmail: currentUser.email || undefined,
           category: "user",
@@ -138,7 +138,6 @@ export default function ScholarshipListing() {
         setUser(null);
       }
     });
-
     return () => unsubscribe();
   }, []);
 
@@ -155,15 +154,16 @@ export default function ScholarshipListing() {
 
   const validateForm = useCallback((): FormErrors => {
     const errors: FormErrors = {};
-    if (!form.title.trim()) errors.title = "Title is required";
-    if (!form.desc.trim()) errors.desc = "Description is required";
-    if (!form.company.trim()) errors.company = "Company name is required";
-    if (!form.companyEmail.trim()) {
-      errors.companyEmail = "Company email is required";
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.companyEmail)) {
-      errors.companyEmail = "Invalid email format";
+    if (!form.scholarshipName.trim()) errors.scholarshipName = "Scholarship Name is required";
+    if (!form.description.trim()) errors.description = "Description is required";
+    if (!form.requirements.trim()) errors.requirements = "Requirements are required";
+    if (!form.provider.trim()) errors.provider = "Provider is required";
+    if (!form.providerEmail.trim()) {
+      errors.providerEmail = "Provider Email is required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.providerEmail)) {
+      errors.providerEmail = "Invalid email format";
     }
-    if (!form.eligibility.trim()) errors.eligibility = "Eligibility criteria is required";
+    if (!form.amount.trim()) errors.amount = "Amount is required";
     if (!form.deadline) {
       errors.deadline = "Deadline is required";
     } else if (new Date(form.deadline) < new Date()) {
@@ -194,27 +194,50 @@ export default function ScholarshipListing() {
     try {
       const q = query(collection(db, "scholarships"), orderBy("createdAt", "desc"));
       const querySnapshot = await getDocs(q);
-      
+
       const fetchedScholarships = querySnapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           id: doc.id,
-          ...data,
+          scholarshipId: doc.id,
+          scholarshipName: data.scholarshipName || "",
+          description: data.description || "",
+          requirements: data.requirements || "",
+          provider: data.provider || "",
+          providerEmail: data.providerEmail || "",
+          amount: data.amount || "",
+          deadline: data.deadline || "",
+          location: data.location || "",
+          img: data.img || "/testpic.jpg",
+          createdAt: data.createdAt,
           status: isExpired(data.deadline) ? 'expired' : 'active',
         } as ScholarshipType;
       });
-      
+
       setScholarshipListings(fetchedScholarships);
 
       // Fetch archived scholarships
       const archivedQuery = query(collection(db, "archivedScholarships"), orderBy("createdAt", "desc"));
       const archivedSnapshot = await getDocs(archivedQuery);
-      const archivedData = archivedSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        status: 'archived',
-      })) as ScholarshipType[];
-      
+      const archivedData = archivedSnapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          scholarshipId: doc.id,
+          scholarshipName: data.scholarshipName || "",
+          description: data.description || "",
+          requirements: data.requirements || "",
+          provider: data.provider || "",
+          providerEmail: data.providerEmail || "",
+          amount: data.amount || "",
+          deadline: data.deadline || "",
+          location: data.location || "",
+          img: data.img || "/testpic.jpg",
+          createdAt: data.createdAt,
+          status: 'archived',
+        } as ScholarshipType;
+      });
+
       setArchivedScholarships(archivedData);
     } catch (error) {
       console.error("Error fetching scholarship listings:", error);
@@ -228,37 +251,64 @@ export default function ScholarshipListing() {
     fetchScholarshipListings();
   }, [fetchScholarshipListings]);
 
+  // Fetch scholarship data when modal opens
+  useEffect(() => {
+    const fetchScholarshipForModal = async () => {
+      if (modalScholarshipId) {
+        const scholarship = scholarshipListings.find(s => s.id === modalScholarshipId) || 
+                           archivedScholarships.find(s => s.id === modalScholarshipId);
+        
+        if (scholarship) {
+          setForm({
+            scholarshipName: scholarship.scholarshipName,
+            description: scholarship.description,
+            requirements: scholarship.requirements,
+            provider: scholarship.provider,
+            providerEmail: scholarship.providerEmail,
+            amount: scholarship.amount,
+            deadline: scholarship.deadline,
+            location: scholarship.location,
+            img: scholarship.img,
+            createdAt: (typeof scholarship.createdAt === 'object' && scholarship.createdAt && 'seconds' in scholarship.createdAt)
+              ? scholarship.createdAt as Timestamp
+              : undefined,
+          });
+          setPreviewUrl(scholarship.img);
+          setFileName(scholarship.img.split('/').pop() || "");
+        }
+      }
+    };
+
+    fetchScholarshipForModal();
+  }, [modalScholarshipId, scholarshipListings, archivedScholarships]);
+
   // Filter and sort scholarships
   const processedScholarships = useMemo(() => {
     let allScholarships = [...scholarshipListings];
-    
+
     if (filterStatus === 'archived') {
       allScholarships = archivedScholarships;
     } else if (filterStatus !== 'all') {
       allScholarships = scholarshipListings.filter(scholarship => scholarship.status === filterStatus);
     }
 
-    // Apply search filter
     if (searchTerm) {
       allScholarships = allScholarships.filter(scholarship =>
-        scholarship.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        scholarship.company.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        scholarship.scholarshipName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        scholarship.provider.toLowerCase().includes(searchTerm.toLowerCase()) ||
         scholarship.location.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
 
-    // Apply sorting
     allScholarships.sort((a, b) => {
+      function getMillis(val: string | Date | Timestamp | import("firebase/firestore").FieldValue | undefined): number {
+        if (!val) return 0;
+        if (typeof val === 'string' || val instanceof Date) return new Date(val).getTime();
+        if (typeof val === 'object' && 'seconds' in val) return new Date((val as Timestamp).seconds * 1000).getTime();
+        return 0;
+      }
       switch (sortBy) {
         case 'oldest':
-// Utility to safely get milliseconds from createdAt
-function getMillis(val: string | Date | Timestamp | import("firebase/firestore").FieldValue | undefined): number {
-  if (!val) return 0;
-  if (typeof val === 'string' || val instanceof Date) return new Date(val).getTime();
-  if (typeof val === 'object' && 'seconds' in val) return new Date((val as Timestamp).seconds * 1000).getTime();
-  return 0;
-}
-
           return getMillis(a.createdAt) - getMillis(b.createdAt);
         case 'deadline':
           return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
@@ -279,7 +329,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
 
   const totalPages = Math.ceil(processedScholarships.length / itemsPerPage);
 
-  // Reset pagination when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, filterStatus, sortBy]);
@@ -290,8 +339,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     setFileName(file.name);
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
-    
-    // Clean up previous preview URL
     return () => {
       if (previewUrl) {
         URL.revokeObjectURL(previewUrl);
@@ -301,7 +348,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value, type } = e.target;
-    
     if (type === 'file') {
       const fileInput = e.target as HTMLInputElement;
       const file = fileInput.files?.[0];
@@ -313,8 +359,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
         ...prev,
         [name]: value
       }));
-      
-      // Clear specific error when user starts typing
       if (formErrors[name]) {
         setFormErrors(prev => ({
           ...prev,
@@ -324,14 +368,12 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   }, [handleFileSelect, formErrors]);
 
-  // Upload image to storage
   const uploadImage = useCallback(async (file: File): Promise<string> => {
     const storageRef = ref(storage, `scholarships/${Date.now()}_${file.name}`);
     const snapshot = await uploadBytes(storageRef, file);
     return await getDownloadURL(snapshot.ref);
   }, []);
 
-  // Delete image from storage
   const deleteImage = useCallback(async (imageUrl: string) => {
     try {
       if (imageUrl && imageUrl !== "/testpic.jpg") {
@@ -343,12 +385,10 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   }, []);
 
-  // Send notification to all users
   const sendNotificationToAllUsers = useCallback(async (title: string, body: string, type: string = "scholarship") => {
     try {
       const usersQuery = query(collection(db, "users"));
       const usersSnapshot = await getDocs(usersQuery);
-      
       const notificationPromises = usersSnapshot.docs.map(async (userDoc) => {
         const userData = userDoc.data();
         await addDoc(collection(db, "notifications"), {
@@ -361,7 +401,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
           createdAt: serverTimestamp(),
         });
       });
-
       await Promise.all(notificationPromises);
     } catch (error) {
       console.error("Error sending notification:", error);
@@ -392,16 +431,21 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
       }
 
       const scholarshipData = {
-        ...form,
+        scholarshipName: form.scholarshipName,
+        description: form.description,
+        requirements: form.requirements,
+        provider: form.provider,
+        providerEmail: form.providerEmail,
+        amount: form.amount,
+        deadline: form.deadline,
+        location: form.location,
         img: imageUrl,
         createdAt: isEditing ? form.createdAt || serverTimestamp() : serverTimestamp(),
         status: "active" as const,
       };
 
       if (isEditing && modalScholarshipId) {
-        // Update existing scholarship
         await updateDoc(doc(db, "scholarships", modalScholarshipId), scholarshipData);
-        
         setScholarshipListings(prev =>
           prev.map(scholarship =>
             scholarship.id === modalScholarshipId
@@ -409,54 +453,42 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
               : scholarship
           )
         );
-
-        // Send notification for update
         await sendNotificationToAllUsers(
           "Scholarship Updated",
-          `The scholarship "${form.title}" by ${form.company} has been updated.`,
+          `The scholarship "${form.scholarshipName}" by ${form.provider} has been updated.`,
           "scholarship"
         );
-
-        // Log activity
         if (user) {
           await recordActivityLog({
             action: "Update Scholarship",
-            details: `Updated scholarship: ${form.title}`,
+            details: `Updated scholarship: ${form.scholarshipName}`,
             userId: user.uid,
             userEmail: user.email || undefined,
             category: "admin",
           });
         }
-
         showNotification("Scholarship updated successfully!");
       } else {
-        // Create new scholarship
         const docRef = await addDoc(collection(db, "scholarships"), scholarshipData);
         await updateDoc(docRef, { scholarshipId: docRef.id });
-        
         setScholarshipListings(prev => [
           { ...scholarshipData, id: docRef.id, scholarshipId: docRef.id } as ScholarshipType,
           ...prev
         ]);
-        
-        // Send notification to all users
         await sendNotificationToAllUsers(
           "New Scholarship Posted",
-          `A new scholarship "${form.title}" has been posted by ${form.company}. Apply now!`,
+          `A new scholarship "${form.scholarshipName}" has been posted by ${form.provider}. Apply now!`,
           "scholarship"
         );
-
-        // Log activity
         if (user) {
           await recordActivityLog({
             action: "Create Scholarship",
-            details: `Published new scholarship: ${form.title}`,
+            details: `Published new scholarship: ${form.scholarshipName}`,
             userId: user.uid,
             userEmail: user.email || undefined,
             category: "admin",
           });
         }
-
         showNotification("Scholarship published successfully!");
       }
 
@@ -470,31 +502,25 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   };
 
-  // Delete scholarship
   const executeDelete = async () => {
     if (!modalScholarshipId) return;
-
     updateLoadingState('deleting', true);
     try {
       const scholarship = scholarshipListings.find(s => s.id === modalScholarshipId);
       if (scholarship?.img) {
         await deleteImage(scholarship.img);
       }
-
       await deleteDoc(doc(db, "scholarships", modalScholarshipId));
       setScholarshipListings(prev => prev.filter(s => s.id !== modalScholarshipId));
-
-      // Log activity
       if (user && scholarship) {
         await recordActivityLog({
           action: "Delete Scholarship",
-          details: `Deleted scholarship: ${scholarship.title}`,
+          details: `Deleted scholarship: ${scholarship.scholarshipName}`,
           userId: user.uid,
           userEmail: user.email || undefined,
           category: "admin",
         });
       }
-
       setModalScholarshipId(null);
       showNotification("Scholarship deleted successfully!");
     } catch (error) {
@@ -506,36 +532,29 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   };
 
-  // Archive scholarship
   const executeArchive = async () => {
     if (!modalScholarshipId) return;
-
     updateLoadingState('archiving', true);
     try {
       const scholarshipRef = doc(db, "scholarships", modalScholarshipId);
       const scholarshipSnap = await getDoc(scholarshipRef);
-
       if (scholarshipSnap.exists()) {
         const scholarshipData = scholarshipSnap.data();
         await setDoc(doc(db, "archivedScholarships", modalScholarshipId), {
           ...scholarshipData,
           archivedAt: serverTimestamp(),
         });
-
         await deleteDoc(scholarshipRef);
         setScholarshipListings(prev => prev.filter(s => s.id !== modalScholarshipId));
-
-        // Log activity
         if (user) {
           await recordActivityLog({
             action: "Archive Scholarship",
-            details: `Archived scholarship: ${scholarshipData.title}`,
+            details: `Archived scholarship: ${scholarshipData.scholarshipName}`,
             userId: user.uid,
             userEmail: user.email || undefined,
             category: "admin",
           });
         }
-
         showNotification("Scholarship archived successfully!");
       }
     } catch (error) {
@@ -548,7 +567,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   };
 
-  // Handle modal confirmation
   const handleConfirmAction = async () => {
     switch (actionType) {
       case "publish":
@@ -565,7 +583,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     }
   };
 
-  // Handle delete action
   const handleDelete = () => {
     if (!modalScholarshipId) return;
     setActionType("delete");
@@ -573,7 +590,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     setShowConfirmationModal(true);
   };
 
-  // Handle archive action
   const handleArchive = (scholarshipId: string) => {
     setActionType("archive");
     setConfirmMessage("Are you sure you want to archive this scholarship? It will be moved to archived section.");
@@ -581,7 +597,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
     setModalScholarshipId(scholarshipId);
   };
 
-  // Render form field with error
   const renderFormField = (
     id: keyof FormData,
     label: string,
@@ -649,27 +664,25 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
           <div className="bg-white rounded-xl shadow-md p-6 mb-8 mt-4">
             <h2 className="text-lg font-bold text-gray-900 mb-4">Post New Scholarship</h2>
             <form onSubmit={handlePublishSubmit} className="space-y-4">
-              {renderFormField("title", "Scholarship Title", "text", true, "e.g., Academic Excellence Scholarship")}
-              {renderFormField("desc", "Description", "text", true, "Describe the scholarship program", "textarea")}
-
+              {renderFormField("scholarshipName", "Scholarship Name", "text", true, "e.g., Academic Excellence Scholarship")}
+              {renderFormField("description", "Description", "text", true, "Brief description of the scholarship", "textarea")}
+              {renderFormField("requirements", "Requirements", "text", true, "Enter the scholarship requirements", "textarea")}
               <div className="flex gap-3 w-full">
                 <div className="w-full">
-                  {renderFormField("company", "Organization", "text", true, "Organization Name")}
+                  {renderFormField("provider", "Provider", "text", true, "Provider Name")}
                 </div>
                 <div className="w-full">
-                  {renderFormField("companyEmail", "Contact Email", "email", true, "info@organization.com")}
+                  {renderFormField("providerEmail", "Provider Email", "email", true, "info@provider.com")}
                 </div>
               </div>
-
               <div className="flex gap-3 w-full">
                 <div className="w-full">
-                  {renderFormField("eligibility", "Eligibility", "text", true, "e.g., Grade 12 students with 90+ average")}
+                  {renderFormField("amount", "Amount", "text", true, "e.g., $1000")}
                 </div>
                 <div className="w-full">
                   {renderFormField("deadline", "Application Deadline", "date", true)}
                 </div>
               </div>
-
               <div className="w-full">
                 {renderFormField("location", "Location", "text", true, "e.g., Nationwide, Metro Manila")}
               </div>
@@ -703,7 +716,7 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                   <div className="mt-2">
                     <Image
                       src={previewUrl}
-                      alt={`Preview of the scholarship image for ${form.title || "Scholarship"}`} // Added descriptive alt text
+                      alt={`Preview of the scholarship image for ${form.scholarshipName || "Scholarship"}`}
                       width={100}
                       height={100}
                       className="rounded border"
@@ -795,7 +808,9 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
             </div>
           ) : paginatedScholarships.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
-              {searchTerm || filterStatus !== 'all' ? "No scholarships match your filters." : "No scholarships found."}
+              {searchTerm || filterStatus !== 'all'
+                ? "No scholarships match your filters."
+                : "No scholarships found."}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pb-4">
@@ -824,7 +839,7 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                   </div>
                   <Image
                     src={scholarship.img || "/testpic.jpg"}
-                    alt={`Scholarship image for ${scholarship.title}`} // Added descriptive alt text
+                    alt={`Scholarship image for ${scholarship.scholarshipName}`}
                     width={280}
                     height={200}
                     className="rounded-t-lg object-cover w-full h-[200px]"
@@ -832,11 +847,11 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                   />
                   <div className="p-4">
                     <h3 className="font-semibold text-gray-900 text-lg mb-1 line-clamp-2">
-                      {scholarship.title}
+                      {scholarship.scholarshipName}
                     </h3>
-                    <p className="text-sm text-gray-600 mb-1">{scholarship.company}</p>
+                    <p className="text-sm text-gray-600 mb-1">{scholarship.provider}</p>
                     <p className="text-sm text-gray-700 leading-tight line-clamp-3">
-                      {scholarship.desc}
+                      {scholarship.description}
                     </p>
                     <div className="mt-3 pt-3 border-t border-gray-100">
                       <p className="text-xs text-gray-500">
@@ -852,7 +867,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
             </div>
           )}
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex justify-between items-center mt-6">
               <div className="flex items-center gap-2">
@@ -894,7 +908,6 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                     } else {
                       pageNum = currentPage - 2 + i;
                     }
-
                     return (
                       <button
                         key={pageNum}
@@ -942,182 +955,179 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                 ×
               </button>
 
-              {scholarshipListings.find(scholarship => scholarship.id === modalScholarshipId) && (
-                <div className="flex flex-col lg:flex-row gap-6">
-                  {/* Image Section */}
-                  <div className="lg:w-[420px] flex-shrink-0 flex flex-col items-center">
-                    <div className="relative">
-                      <Image
-                        src={previewUrl || form.img || "/testpic.jpg"}
-                        alt={`Scholarship image for ${form.title || "Scholarship"}`} // Added descriptive alt text
-                        width={420}
-                        height={420}
-                        className="w-full lg:w-[420px] h-[300px] lg:h-[420px] object-cover rounded-lg border-2 border-[#1167B1]"
-                        unoptimized
-                      />
-                      <div className="absolute top-2 left-2">
-                        <span
-                          className={`px-2 py-1 text-xs font-semibold rounded-full ${
-                            isExpired(form.deadline)
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-green-100 text-green-800'
-                          }`}
+              <div className="flex flex-col lg:flex-row gap-6">
+                {/* Image Section */}
+                <div className="lg:w-[420px] flex-shrink-0 flex flex-col items-center">
+                  <div className="relative">
+                    <Image
+                      src={previewUrl || form.img || "/testpic.jpg"}
+                      alt={`Scholarship image for ${form.scholarshipName || "Scholarship"}`}
+                      width={420}
+                      height={420}
+                      className="w-full lg:w-[420px] h-[300px] lg:h-[420px] object-cover rounded-lg border-2 border-[#1167B1]"
+                      unoptimized
+                    />
+                    <div className="absolute top-2 left-2">
+                      <span
+                        className={`px-2 py-1 text-xs font-semibold rounded-full ${
+                          isExpired(form.deadline)
+                            ? 'bg-red-100 text-red-800'
+                            : 'bg-green-100 text-green-800'
+                        }`}
+                      >
+                        {isExpired(form.deadline) ? 'Expired' : 'Active'}
+                      </span>
+                    </div>
+                  </div>
+                  {isEditing && (
+                    <div className="mt-4 w-full">
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">
+                        Change Picture
+                      </label>
+                      <div className="border border-gray-300 rounded-md h-10 flex items-center overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="bg-[#DBEAFE] px-4 h-full text-sm font-medium text-gray-700 hover:bg-[#C5D8F1] flex-shrink-0 transition-colors"
                         >
-                          {isExpired(form.deadline) ? 'Expired' : 'Active'}
+                          Choose File
+                        </button>
+                        <span className="text-sm text-gray-600 px-3 truncate w-full text-left">
+                          {fileName || "No file chosen"}
                         </span>
+                        <input
+                          type="file"
+                          ref={fileInputRef}
+                          className="hidden"
+                          onChange={handleChange}
+                          accept="image/*"
+                        />
                       </div>
                     </div>
+                  )}
+                </div>
 
-                    {isEditing && (
-                      <div className="mt-4 w-full">
-                        <label className="block text-sm font-semibold text-gray-700 mb-1">
-                          Change Picture
-                        </label>
-                        <div className="border border-gray-300 rounded-md h-10 flex items-center overflow-hidden">
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="bg-[#DBEAFE] px-4 h-full text-sm font-medium text-gray-700 hover:bg-[#C5D8F1] flex-shrink-0 transition-colors"
-                          >
-                            Choose File
-                          </button>
-                          <span className="text-sm text-gray-600 px-3 truncate w-full text-left">
-                            {fileName || "No file chosen"}
-                          </span>
-                          <input
-                            type="file"
-                            ref={fileInputRef}
-                            className="hidden"
-                            onChange={handleChange}
-                            accept="image/*"
-                          />
-                        </div>
+                {/* Form Section */}
+                <div className="flex-grow space-y-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="lg:col-span-2">
+                      {renderFormField("scholarshipName", "Scholarship Name")}
+                    </div>
+                    <div className="lg:col-span-2">
+                      {renderFormField("description", "Description", "text", true, "Brief description", "textarea")}
+                    </div>
+                    <div className="lg:col-span-2">
+                      {renderFormField("requirements", "Requirements", "text", true, "Enter requirements", "textarea")}
+                    </div>
+                    <div>
+                      {renderFormField("provider", "Provider")}
+                    </div>
+                    <div>
+                      {renderFormField("providerEmail", "Provider Email", "email")}
+                    </div>
+                    <div>
+                      {renderFormField("amount", "Amount", "text", true, "e.g., $1000")}
+                    </div>
+                    <div>
+                      {renderFormField("deadline", "Application Deadline", "date")}
+                    </div>
+                    <div>
+                      {renderFormField("location", "Location", "text", true, "e.g., Nationwide, Metro Manila")}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">
+                        Days Until Deadline
+                      </label>
+                      <div className="w-full bg-gray-100 p-2 rounded border text-gray-600">
+                        {(() => {
+                          const daysLeft = Math.ceil((new Date(form.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+                          return daysLeft > 0 ? `${daysLeft} days remaining` : 'Expired';
+                        })()}
                       </div>
-                    )}
+                    </div>
                   </div>
 
-                  {/* Form Section */}
-                  <div className="flex-grow space-y-4">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <div className="lg:col-span-2">
-                        {renderFormField("title", "Scholarship Title")}
-                      </div>
+                  <div className="flex flex-col sm:flex-row gap-3 mt-8 pt-6 border-t border-gray-200">
+                    <button
+                      onClick={() => handleArchive(modalScholarshipId!)}
+                      disabled={loadingStates.archiving}
+                      className="flex-1 bg-orange-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-orange-700 disabled:opacity-50 transition-colors"
+                    >
+                      {loadingStates.archiving ? "Archiving..." : "Archive Scholarship"}
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      disabled={loadingStates.deleting}
+                      className="flex-1 bg-red-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
+                    >
+                      {loadingStates.deleting ? "Deleting..." : "Delete Scholarship"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (isEditing) {
+                          setActionType("publish");
+                          setConfirmMessage("Are you sure you want to save changes?");
+                          setShowConfirmationModal(true);
+                        } else {
+                          setIsEditing(true);
+                        }
+                      }}
+                      disabled={loadingStates.saving}
+                      className="flex-1 bg-[#fcd116] text-black text-sm font-semibold py-3 px-4 rounded-md hover:brightness-90 disabled:opacity-50 transition-all"
+                    >
+                      {loadingStates.saving ? "Saving..." : (isEditing ? "Save Changes" : "Edit Information")}
+                    </button>
+                    <a
+                      href={`/scholarship-listing/Scholarship-Listing-Applicants?scholarshipId=${modalScholarshipId}`}
+                      className="flex-1 bg-[#1167B1] text-white text-sm font-semibold py-3 px-4 rounded-md text-center hover:bg-[#0A4F9E] transition-colors"
+                    >
+                      View Applicants
+                    </a>
+                  </div>
 
-                      <div className="lg:col-span-2">
-                        {renderFormField("desc", "Description", "text", true, "Enter description", "textarea")}
-                      </div>
-
-                      {renderFormField("company", "Organization")}
-                      {renderFormField("companyEmail", "Contact Email", "email")}
-                      {renderFormField("eligibility", "Eligibility")}
-                      {renderFormField("location", "Location")}
-                      {renderFormField("deadline", "Application Deadline", "date")}
-
-                      <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-1">
-                          Days Until Deadline
-                        </label>
-                        <div className="w-full bg-gray-100 p-2 rounded border text-gray-600">
-                          {(() => {
-                            const daysLeft = Math.ceil((new Date(form.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
-                            return daysLeft > 0 ? `${daysLeft} days remaining` : 'Expired';
-                          })()}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex flex-col sm:flex-row gap-3 mt-8 pt-6 border-t border-gray-200">
-                      <button
-                        onClick={() => handleArchive(modalScholarshipId!)}
-                        disabled={loadingStates.archiving}
-                        className="flex-1 bg-orange-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-orange-700 disabled:opacity-50 transition-colors"
-                      >
-                        {loadingStates.archiving ? "Archiving..." : "Archive Scholarship"}
-                      </button>
-
-                      <button
-                        onClick={handleDelete}
-                        disabled={loadingStates.deleting}
-                        className="flex-1 bg-red-600 text-white text-sm font-semibold py-3 px-4 rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
-                      >
-                        {loadingStates.deleting ? "Deleting..." : "Delete Scholarship"}
-                      </button>
-
+                  {isEditing && (
+                    <div className="flex justify-end gap-3 mt-4">
                       <button
                         onClick={() => {
-                          if (isEditing) {
-                            setActionType("publish");
-                            setConfirmMessage("Are you sure you want to save changes?");
-                            setShowConfirmationModal(true);
-                          } else {
-                            setIsEditing(true);
+                          setIsEditing(false);
+                          const scholarship = scholarshipListings.find(s => s.id === modalScholarshipId) || 
+                                             archivedScholarships.find(s => s.id === modalScholarshipId);
+                          if (scholarship) {
+                            setForm({
+                              scholarshipName: scholarship.scholarshipName,
+                              description: scholarship.description,
+                              requirements: scholarship.requirements,
+                              provider: scholarship.provider,
+                              providerEmail: scholarship.providerEmail,
+                              amount: scholarship.amount,
+                              deadline: scholarship.deadline,
+                              location: scholarship.location,
+                              img: scholarship.img,
+                              createdAt: (typeof scholarship.createdAt === 'object' && scholarship.createdAt && 'seconds' in scholarship.createdAt)
+                                ? scholarship.createdAt as Timestamp
+                                : undefined,
+                            });
+                            setPreviewUrl(scholarship.img);
+                            setFileName(scholarship.img.split('/').pop() || "");
                           }
+                          setFormErrors({});
                         }}
-                        disabled={loadingStates.saving}
-                        className="flex-1 bg-[#fcd116] text-black text-sm font-semibold py-3 px-4 rounded-md hover:brightness-90 disabled:opacity-50 transition-all"
+                        className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400 transition-colors"
                       >
-                        {loadingStates.saving ? "Saving..." : (isEditing ? "Save Changes" : "Edit Information")}
+                        Cancel
                       </button>
-
-                      <a
-                        href={`/scholarship-listing/Scholarship-Listing-Applicants?scholarshipId=${modalScholarshipId}`}
-                        className="flex-1 bg-[#1167B1] text-white text-sm font-semibold py-3 px-4 rounded-md text-center hover:bg-[#0A4F9E] transition-colors"
-                      >
-                        View Applicants
-                      </a>
                     </div>
-
-                    {isEditing && (
-                      <div className="flex justify-end gap-3 mt-4">
-                        <button
-                          onClick={() => {
-                            setIsEditing(false);
-                            const scholarship = scholarshipListings.find(s => s.id === modalScholarshipId);
-                            if (scholarship) {
-                              setForm({
-                                title: scholarship.title,
-                                desc: scholarship.desc,
-                                company: scholarship.company,
-                                companyEmail: scholarship.companyEmail,
-                                eligibility: scholarship.eligibility,
-                                deadline: scholarship.deadline,
-                                location: scholarship.location,
-                                img: scholarship.img,
-                                createdAt: (typeof scholarship.createdAt === 'object' && scholarship.createdAt && 'seconds' in scholarship.createdAt)
-                                  ? scholarship.createdAt
-                                  : undefined,
-                              });
-                              setPreviewUrl(scholarship.img);
-                              setFileName(scholarship.img.split('/').pop() || "");
-                            }
-                            setFormErrors({});
-                          }}
-                          className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400 transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
         )}
 
-        {/* Confirmation Modal */}
         {showConfirmationModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
+            <div className="fixed inset-0 bg-opacity-50 backdrop-blur-lg flex items-center justify-center z-[100]">
             <div className="bg-white p-6 rounded-lg shadow-2xl text-center max-w-md mx-4">
               <div className="mb-4">
-                {actionType === 'delete' && (
-                  <div className="w-16 h-16 mx-auto mb-4 bg-red-100 rounded-full flex items-center justify-center">
-                    <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                    </svg>
-                  </div>
-                )}
                 {actionType === 'archive' && (
                   <div className="w-16 h-16 mx-auto mb-4 bg-orange-100 rounded-full flex items-center justify-center">
                     <svg className="w-8 h-8 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1133,10 +1143,8 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
                   </div>
                 )}
               </div>
-
               <h3 className="text-lg font-semibold text-gray-900 mb-2">Confirm Action</h3>
               <p className="text-gray-600 mb-6">{confirmMessage}</p>
-
               <div className="flex gap-3 justify-center">
                 <button
                   onClick={() => setShowConfirmationModal(false)}
@@ -1162,9 +1170,8 @@ function getMillis(val: string | Date | Timestamp | import("firebase/firestore")
           </div>
         )}
 
-        {/* Success Modal */}
         {showSuccessModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[100]">
+            <div className="fixed inset-0 bg-opacity-50 backdrop-blur-md flex items-center justify-center z-[100]">
             <div className="bg-white p-6 rounded-lg shadow-2xl text-center max-w-md mx-4">
               <div className="w-16 h-16 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
                 <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -12,7 +12,8 @@ import {
   doc,
   setDoc,
   serverTimestamp,
-  getDoc,
+  query,
+  where,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuthState } from "react-firebase-hooks/auth";
@@ -41,11 +42,9 @@ const DocumentationReport = () => {
 
   const [communityEvent, setCommunityEvent] = useState("");
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [fileInputsBySection, setFileInputsBySection] = useState<
-    Record<string, FileInput[]>
-  >(() => {
+  const [fileInputsBySection, setFileInputsBySection] = useState<Record<string, FileInput[]>>(() => {
     const initialState: Record<string, FileInput[]> = {};
-    sections.forEach((section) => {
+    sections.forEach((section: string) => {
       initialState[section] = [{ id: Date.now(), file: null }];
     });
     return initialState;
@@ -56,7 +55,7 @@ const DocumentationReport = () => {
   const [user] = useAuthState(auth);
   const router = useRouter();
 
-  // Fetch events from Firestore and user name from adminUsers
+  // Fetch events from Firestore and user name from approvedUsers
   useEffect(() => {
     const fetchEvents = async () => {
       try {
@@ -74,36 +73,31 @@ const DocumentationReport = () => {
         alert("Error loading events. Please refresh the page.");
       }
     };
-
     const fetchUserName = async () => {
       if (user && user.uid) {
         try {
-          // First try to get from adminUsers collection
-          const userDocRef = doc(db, "adminUsers", user.uid);
-          const userSnap = await getDoc(userDocRef);
-          
-          if (userSnap.exists()) {
-            const userData = userSnap.data();
-            // Get name from the 'name' field in adminUsers collection
-            const userName = userData?.name || "Unknown User";
+          const q = query(collection(db, "adminUsers"), where("uid", "==", user.uid));
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+            const userDoc = querySnapshot.docs[0];
+            const userData = userDoc.data();
+            const userName = userData.name || "Unknown User";
             setCompiledBy(userName);
-            console.log("Admin user found:", userName);
+            console.log("Fetched user name:", userName);
           } else {
-            console.warn("Admin user document not found in adminUsers collection");
-            // Fallback: try to use email or display name from auth
-            const fallbackName = user.displayName || user.email || "Unknown User";
-            setCompiledBy(fallbackName);
+            console.warn("User not found in adminUsers collection");
+            setCompiledBy("Unknown User");
           }
         } catch (error) {
           console.error("Error fetching user name from adminUsers collection:", error);
-          // Fallback: use auth display name or email
-          const fallbackName = user.displayName || user.email || "Unknown User";
-          setCompiledBy(fallbackName);
+          setCompiledBy("Unknown User");
         }
       } else {
         setCompiledBy("Unknown User");
       }
     };
+
 
     fetchEvents();
     fetchUserName();
@@ -114,16 +108,16 @@ const DocumentationReport = () => {
     id: number,
     file: File | null
   ) => {
-    setFileInputsBySection((prev) => ({
+    setFileInputsBySection((prev: Record<string, FileInput[]>) => ({
       ...prev,
-      [section]: prev[section].map((input) =>
+      [section]: prev[section].map((input: FileInput) =>
         input.id === id ? { ...input, file } : input
       ),
     }));
   };
 
   const handleAddNewInput = (section: string) => {
-    setFileInputsBySection((prev) => ({
+    setFileInputsBySection((prev: Record<string, FileInput[]>) => ({
       ...prev,
       [section]: [
         ...prev[section],
@@ -137,8 +131,8 @@ const DocumentationReport = () => {
       "Are you sure you want to delete this photo?"
     );
     if (confirmed) {
-      setFileInputsBySection((prev) => {
-        const updated = prev[section].filter((input) => input.id !== id);
+      setFileInputsBySection((prev: Record<string, FileInput[]>) => {
+        const updated = prev[section].filter((input: FileInput) => input.id !== id);
         return {
           ...prev,
           [section]: updated.length > 0 ? updated : prev[section],
@@ -158,8 +152,57 @@ const DocumentationReport = () => {
     return allFieldsFilled;
   };
 
+  // Helper function to compress image
+  const compressImage = (file: File, maxSizeKB: number = 800): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Calculate new dimensions to maintain aspect ratio
+          let width = img.width;
+          let height = img.height;
+          const maxDimension = 1200; // Max width or height
+          
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = (height / width) * maxDimension;
+              width = maxDimension;
+            } else {
+              width = (width / height) * maxDimension;
+              height = maxDimension;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Start with quality 0.7 and adjust if needed
+          let quality = 0.7;
+          let compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          
+          // Check size and reduce quality if needed
+          while (compressedDataUrl.length > maxSizeKB * 1024 * 1.37 && quality > 0.1) {
+            quality -= 0.1;
+            compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          }
+          
+          resolve(compressedDataUrl);
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+    });
+  };
+
   // Helper function to convert file to base64
-  const fileToBase64 = (file: File): Promise<string> => {
+  const fileToBase64 = (file: File | Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
@@ -168,81 +211,14 @@ const DocumentationReport = () => {
     });
   };
 
-  // Aggressive compression function to reduce images to kilobytes
-  const compressImageToKB = (base64: string, maxSizeKB: number = 50, preserveTransparency: boolean = false): Promise<string> => {
-    return new Promise((resolve) => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const img = new Image();
-      
-      img.onload = () => {
-        // Start with very small dimensions
-        let maxWidth = 400;
-        let maxHeight = 300;
-        let quality = 0.5;
-        
-        const compress = () => {
-          let { width, height } = img;
-          
-          // Calculate dimensions
-          if (width > maxWidth || height > maxHeight) {
-            const widthRatio = maxWidth / width;
-            const heightRatio = maxHeight / height;
-            const ratio = Math.min(widthRatio, heightRatio);
-            width *= ratio;
-            height *= ratio;
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          
-          // Clear canvas with transparent background if preserving transparency
-          if (preserveTransparency && ctx) {
-            ctx.clearRect(0, 0, width, height);
-          }
-          
-          ctx?.drawImage(img, 0, 0, width, height);
-          
-          // Use PNG for transparent images, JPEG for others
-          const format = preserveTransparency ? 'image/png' : 'image/jpeg';
-          const compressedBase64 = canvas.toDataURL(format, quality);
-          
-          // Calculate size in KB
-          const base64Length = compressedBase64.length;
-          const sizeInKB = (base64Length * 0.75) / 1024; // Approximate KB size
-          
-          console.log(`Image compressed to: ${sizeInKB.toFixed(1)}KB with quality ${quality} and dimensions ${width}x${height}`);
-          
-          // If still too large, reduce quality and dimensions further
-          if (sizeInKB > maxSizeKB && (quality > 0.1 || maxWidth > 200)) {
-            if (quality > 0.1) {
-              quality -= 0.1;
-            } else {
-              maxWidth = Math.max(200, maxWidth * 0.8);
-              maxHeight = Math.max(150, maxHeight * 0.8);
-              quality = 0.5; // Reset quality when reducing dimensions
-            }
-            compress(); // Recursively compress
-          } else {
-            resolve(compressedBase64);
-          }
-        };
-        
-        compress();
-      };
-      
-      img.src = base64;
-    });
-  };
-
   // Helper function to load image and get dimensions for PDF
-  const loadImageForPDF = (src: string): Promise<{ img: HTMLImageElement; width: number; height: number }> => {
+  const loadImageForPDF = (src: string): Promise<{ width: number; height: number }> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        // Smaller dimensions for PDF to save space
-        const maxWidth = 200;
-        const maxHeight = 150;
+        // Reasonable dimensions for PDF display
+        const maxWidth = 450;
+        const maxHeight = 400;
         let { width, height } = img;
 
         if (width > maxWidth || height > maxHeight) {
@@ -253,7 +229,7 @@ const DocumentationReport = () => {
           height *= ratio;
         }
 
-        resolve({ img, width, height });
+        resolve({ width, height });
       };
       img.onerror = () => reject(new Error('Failed to load image'));
       img.src = src;
@@ -265,11 +241,11 @@ const DocumentationReport = () => {
     try {
       const skLogoResponse = await fetch("/SKLogo.png");
       const skLogoBlob = await skLogoResponse.blob();
-      const skLogoDataUrl = await fileToBase64(skLogoBlob as File);
+      const skLogoDataUrl = await fileToBase64(skLogoBlob);
 
       const marikinaLogoResponse = await fetch("/MarikinaLogo.png");
       const marikinaLogoBlob = await marikinaLogoResponse.blob();
-      const marikinaLogoDataUrl = await fileToBase64(marikinaLogoBlob as File);
+      const marikinaLogoDataUrl = await fileToBase64(marikinaLogoBlob);
 
       return { skLogoDataUrl, marikinaLogoDataUrl };
     } catch (error) {
@@ -286,14 +262,12 @@ const DocumentationReport = () => {
     // Load logos
     const { skLogoDataUrl, marikinaLogoDataUrl } = await loadLogos();
 
-    // Add logos (compressed with transparency preserved)
+    // Add logos
     if (skLogoDataUrl) {
-      const compressedLogo = await compressImageToKB(skLogoDataUrl, 50, true);
-      pdf.addImage(compressedLogo, "PNG", margin, 38, 80, 60);
+      pdf.addImage(skLogoDataUrl, "PNG", margin, 38, 100, 80);
     }
     if (marikinaLogoDataUrl) {
-      const compressedLogo = await compressImageToKB(marikinaLogoDataUrl, 50, true);
-      pdf.addImage(compressedLogo, "PNG", pageWidth - margin - 80, 38, 80, 80);
+      pdf.addImage(marikinaLogoDataUrl, "PNG", pageWidth - margin - 80, 38, 80, 80);
     }
 
     let yPos = 60;
@@ -356,7 +330,6 @@ const DocumentationReport = () => {
     yPos += 14;
     pdf.setFontSize(12);
     pdf.setFont("times", "normal");
-    pdf.text(`Generated on: ${new Date().toLocaleDateString()}`, pageWidth / 2, yPos, { align: "center" });
 
     return yPos + 40;
   };
@@ -370,9 +343,13 @@ const DocumentationReport = () => {
     return yPos;
   };
 
-  // Simplified PDF generation with heavy compression
-  const generateOptimizedPDF = async (selectedEvent: EventItem, imageDataForPDF: Record<string, string[]>) => {
-    const pdf = new jsPDF({ unit: "pt", format: "a4" });
+  // Generate PDF with compressed images
+  const generatePDF = async (selectedEvent: EventItem, imageDataForPDF: Record<string, string[]>) => {
+    const pdf = new jsPDF({ 
+      unit: "pt", 
+      format: "a4", 
+      compress: true 
+    });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
     const margin = 40;
@@ -380,7 +357,7 @@ const DocumentationReport = () => {
     // Add header
     let y = await addPDFHeader(pdf, selectedEvent);
 
-    // Process each section with heavy compression
+    // Process each section
     for (const section of sections) {
       if (imageDataForPDF[section].length === 0) continue;
 
@@ -394,12 +371,10 @@ const DocumentationReport = () => {
       pdf.setFont("times", "normal");
       y += 20;
 
-      // Add images for this section with aggressive compression
+      // Add images for this section
       for (let i = 0; i < imageDataForPDF[section].length; i++) {
         try {
-          // Compress to 30KB or less
-          const compressedImage = await compressImageToKB(imageDataForPDF[section][i], 30);
-          const { width, height } = await loadImageForPDF(compressedImage);
+          const { width, height } = await loadImageForPDF(imageDataForPDF[section][i]);
           
           // Check if we need a new page for the image
           if (y + height > pageHeight - margin - 60) {
@@ -408,18 +383,18 @@ const DocumentationReport = () => {
           }
 
           const x = (pageWidth - width) / 2; // Center the image
-          pdf.addImage(compressedImage, "JPEG", x, y, width, height);
-          y += height + 15; // Reduced spacing
+          pdf.addImage(imageDataForPDF[section][i], "JPEG", x, y, width, height);
+          y += height + 20;
         } catch (error) {
           console.error("Error adding image to PDF:", error);
           // Add a placeholder text instead of the image
           pdf.setFontSize(10);
           pdf.text("(Image could not be loaded)", margin, y);
-          y += 15;
+          y += 20;
         }
       }
 
-      y += 10; // Reduced space between sections
+      y += 15; // Space between sections
     }
 
     // Add signatures section at the end
@@ -428,7 +403,8 @@ const DocumentationReport = () => {
     pdf.setFontSize(12);
     pdf.setFont("times", "normal");
     pdf.text(`Compiled By: ${compiledBy}`, margin, y);
-    pdf.text("Noted By: Hon. Ma. Julianna M. Santiago", margin, y + 20);
+    y += 14; // Add one line space before "Noted By"
+    pdf.text("Noted By: Hon. Ma. Julianna M. Santiago", margin, y);
 
     return pdf;
   };
@@ -459,7 +435,7 @@ const DocumentationReport = () => {
       .filter(input => input.file !== null).length;
     
     const confirmed = window.confirm(
-      `Are you sure you want to add all entries? This will process ${totalFiles} photos with high compression and may take 1-2 minutes.`
+      `Are you sure you want to add all entries? This will process ${totalFiles} photos and generate a compressed PDF (max 5MB).`
     );
     if (!confirmed) return;
 
@@ -468,7 +444,7 @@ const DocumentationReport = () => {
     try {
       // Save uploaded files to Firebase Storage & Firestore
       const uploadResults: Record<string, string[]> = {};
-      const imageDataForPDF: Record<string, string[]> = {}; // Store base64 data for PDF
+      const imageDataForPDF: Record<string, string[]> = {}; // Store compressed base64 data for PDF
 
       for (const section of sections) {
         uploadResults[section] = [];
@@ -477,29 +453,16 @@ const DocumentationReport = () => {
         for (const input of fileInputsBySection[section]) {
           if (input.file) {
             try {
-              // Convert file to base64 and compress for PDF generation (50KB max)
-              const base64Data = await fileToBase64(input.file);
-              const compressedForPDF = await compressImageToKB(base64Data, 50);
-              imageDataForPDF[section].push(compressedForPDF);
+              // Compress image for PDF generation
+              const compressedBase64 = await compressImage(input.file, 800);
+              imageDataForPDF[section].push(compressedBase64);
 
-              // Compress for Firebase storage (100KB max)
-              const compressedForStorage = await compressImageToKB(base64Data, 100);
-              
-              // Convert compressed base64 back to blob for upload
-              const byteCharacters = atob(compressedForStorage.split(',')[1]);
-              const byteNumbers = new Array(byteCharacters.length);
-              for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-              }
-              const byteArray = new Uint8Array(byteNumbers);
-              const compressedBlob = new Blob([byteArray], { type: 'image/jpeg' });
-
-              // Upload compressed image to Firebase Storage
+              // Upload original image to Firebase Storage
               const storageRef = ref(
                 storage,
-                `events/${selectedEvent.id}/${section}/${input.file.name.replace(/\.[^/.]+$/, '')}_compressed.jpg`
+                `events/${selectedEvent.id}/${section}/${input.file.name}`
               );
-              await uploadBytes(storageRef, compressedBlob);
+              await uploadBytes(storageRef, input.file);
               const downloadURL = await getDownloadURL(storageRef);
               uploadResults[section].push(downloadURL);
             } catch (error) {
@@ -510,14 +473,20 @@ const DocumentationReport = () => {
         }
       }
 
-      // Generate optimized PDF
-      const pdf = await generateOptimizedPDF(selectedEvent, imageDataForPDF);
+      // Generate PDF with compressed images
+      const pdf = await generatePDF(selectedEvent, imageDataForPDF);
       
-      // Convert PDF to blob
+      // Get PDF as blob with compression
       const pdfBlob = pdf.output("blob");
       const pdfSize = pdfBlob.size;
       
-      console.log(`Final PDF size: ${(pdfSize / 1024).toFixed(2)}KB`);
+      console.log(`Initial PDF size: ${(pdfSize / 1024 / 1024).toFixed(2)}MB`);
+
+      // Check if PDF exceeds 5MB and warn user
+      if (pdfSize > 5 * 1024 * 1024) {
+        console.warn(`PDF size (${(pdfSize / 1024 / 1024).toFixed(2)}MB) exceeds 5MB. Consider reducing the number of photos or image quality.`);
+        alert(`Warning: PDF size is ${(pdfSize / 1024 / 1024).toFixed(2)}MB, which exceeds the 5MB target. The PDF will still be generated, but it may take longer to load.`);
+      }
 
       // Upload PDF to Firebase Storage
       const pdfRef = ref(
@@ -549,7 +518,7 @@ const DocumentationReport = () => {
       // Store PDF URL in sessionStorage for viewing
       sessionStorage.setItem("generatedPDFUrl", pdfDownloadURL);
 
-      alert(`Report generated successfully! PDF size: ${(pdfSize / 1024).toFixed(2)}KB`);
+      alert(`Report generated successfully! PDF size: ${(pdfSize / 1024 / 1024).toFixed(2)}MB`);
       router.push(
         "/transparency-report/Documentation-Report/DocumentationFile"
       );
@@ -620,9 +589,6 @@ const DocumentationReport = () => {
           {sections.map((section) => (
             <div key={section}>
               <label className="block text-lg font-medium mb-2">{section}</label>
-              <p className="text-xs text-gray-500 mb-2">
-                Images will be automatically compressed to reduce file size
-              </p>
               {fileInputsBySection[section].map((input) => (
                 <div
                   key={input.id}
@@ -682,12 +648,12 @@ const DocumentationReport = () => {
           )}
 
           <div className="bg-blue-50 p-4 rounded-md">
-            <h3 className="font-medium text-blue-800 mb-2">Compression Info:</h3>
+            <h3 className="font-medium text-blue-800 mb-2">PDF Generation Info:</h3>
             <ul className="text-sm text-blue-700 space-y-1">
-              <li>• Images will be compressed to ~50KB for PDF generation</li>
-              <li>• Images will be compressed to ~100KB for storage</li>
-              <li>• This ensures faster loading and smaller file sizes</li>
-              <li>• Original image quality may be reduced for optimization</li>
+              <li>• Images will be compressed to reduce PDF file size</li>
+              <li>• Target PDF size is under 5MB for optimal performance</li>
+              <li>• Original high-quality images will be stored in Firebase</li>
+              <li>• Generation may take 1-2 minutes depending on the number of photos</li>
             </ul>
           </div>
 
@@ -697,7 +663,7 @@ const DocumentationReport = () => {
               onClick={handleGenerate}
               disabled={isGenerating}
             >
-              {isGenerating ? "Compressing & Generating..." : "Generate"}
+              {isGenerating ? "Generating PDF..." : "Generate"}
             </button>
           </div>
         </div>

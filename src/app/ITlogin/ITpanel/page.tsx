@@ -30,71 +30,223 @@ type Account = {
   civilStatus: string;
   gender: string;
   phoneNumber: string;
-  modules: string[]; // Array of module IDs
+  modules: string[];
 };
 
-// Import modules from navbar (you can also move this to a separate constants file)
+// Email configuration type
+type EmailData = {
+  to: string;
+  subject: string;
+  html: string;
+}
+
+// Email configuration - Replace with your actual Gmail credentials
+const EMAIL_CONFIG = {
+  GMAIL_USER: 'skcentralsystem@gmail.com', // Replace with your actual Gmail
+  GMAIL_APP_PASSWORD: 'awis lkif bgih hclg', // Replace with your actual app password
+};
+
+// Send email function
+const sendEmailDirectly = async (emailData: EmailData) => {
+  try {
+    // Validate email configuration
+    if (!EMAIL_CONFIG.GMAIL_USER ||
+        !EMAIL_CONFIG.GMAIL_APP_PASSWORD ||
+        EMAIL_CONFIG.GMAIL_USER.trim() === '' ||
+        EMAIL_CONFIG.GMAIL_APP_PASSWORD.trim() === '' ||
+        !EMAIL_CONFIG.GMAIL_USER.includes('@') ||
+        EMAIL_CONFIG.GMAIL_APP_PASSWORD.length < 16) {
+      throw new Error('Gmail credentials not configured properly in EMAIL_CONFIG. Please check your email and app password.');
+    }
+
+    console.log('Sending email to:', emailData.to);
+
+    // Send email via API route
+    const response = await fetch('/api/send-email', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: EMAIL_CONFIG.GMAIL_USER,
+        to: emailData.to,
+        subject: emailData.subject,
+        html: emailData.html,
+        gmailUser: EMAIL_CONFIG.GMAIL_USER,
+        gmailPassword: EMAIL_CONFIG.GMAIL_APP_PASSWORD,
+      }),
+    });
+
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const htmlText = await response.text();
+      console.error('API returned HTML instead of JSON:', htmlText.substring(0, 200));
+      throw new Error('API route not found or returning HTML. Please ensure /api/send-email/route.ts exists and is properly configured.');
+    }
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = result.error || 'Failed to send email';
+      if (result.details) {
+        errorMessage += ` (${result.details})`;
+      }
+      
+      console.error('API Error Response:', result);
+      throw new Error(errorMessage);
+    }
+
+    console.log('Email sent successfully via API');
+    
+    return {
+      success: true,
+      messageId: result.messageId || 'email_' + Date.now(),
+      message: result.message || `Email notification sent successfully to ${emailData.to}`
+    };
+
+  } catch (error) {
+    console.error('Email sending error:', error);
+    throw error;
+  }
+};
+
+// Send admin account creation email
+const sendAdminCreationEmail = async (account: Account, tempPassword: string) => {
+  try {
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background-color: #103F91; color: white; padding: 20px; text-align: center;">
+          <h1>SK Central System</h1>
+          <h2>Admin Account Created</h2>
+        </div>
+        
+        <div style="padding: 20px; background-color: #f9f9f9;">
+          <h3 style="color: #103F91;">Welcome to SK Central System Admin Portal</h3>
+          
+          <p>Dear ${account.name},</p>
+          
+          <p>Your administrator account has been successfully created. You can now access the SK Central System with your credentials.</p>
+          
+          <div style="background-color: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
+            <h4 style="color: #103F91; margin-top: 0;">Your Account Credentials</h4>
+            <p><strong>SK ID:</strong> ${account.skId}</p>
+            <p><strong>Email:</strong> ${account.email}</p>
+            <p><strong>Temporary Password:</strong> <span style="background-color: #fff3cd; padding: 2px 5px; font-family: monospace; font-weight: bold;">${tempPassword}</span></p>
+            <p><strong>Position:</strong> ${account.position}</p>
+            <p><strong>Barangay:</strong> ${account.barangay}</p>
+          </div>
+          
+          <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
+            <h4 style="color: #856404; margin-top: 0;">Important Security Notice</h4>
+            <p style="color: #856404; margin: 0;">Please change your password immediately after your first login for security purposes. Keep your credentials safe and do not share them with anyone.</p>
+          </div>
+          
+          <div style="background-color: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
+            <h4 style="color: #103F91; margin-top: 0;">Your Profile Information</h4>
+            <p><strong>Name:</strong> ${account.name}</p>
+            <p><strong>Birthday:</strong> ${account.birthday}</p>
+            <p><strong>Gender:</strong> ${account.gender}</p>
+            <p><strong>Civil Status:</strong> ${account.civilStatus}</p>
+            <p><strong>Contact:</strong> ${account.phoneNumber}</p>
+          </div>
+
+          <div style="background-color: #e8f4ff; padding: 15px; border-radius: 5px; margin: 10px 0;">
+            <h4 style="color: #103F91; margin-top: 0;">Your Assigned Modules</h4>
+            <p style="margin: 0;">You have been granted access to the following modules:</p>
+            <ul style="margin: 10px 0;">
+              ${account.modules.map(moduleId => `<li>${moduleId}</li>`).join('')}
+            </ul>
+          </div>
+          
+          <div style="text-align: center; margin-top: 20px;">
+            <p style="color: #666; font-size: 12px;">
+              This is an automated notification from SK Central System.<br>
+              If you have any questions, please contact the system administrator.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    await sendEmailDirectly({
+      to: account.email,
+      subject: `SK Admin Account Created - Welcome ${account.name}!`,
+      html: htmlContent,
+    });
+
+    console.log(`Admin creation email sent to ${account.email}`);
+  } catch (emailError) {
+    console.error(`Failed to send admin creation email to ${account.email}:`, emailError);
+    throw emailError;
+  }
+};
+
+// Send password reset email
+const sendPasswordResetEmail = async (email: string, name: string, tempPassword: string) => {
+  try {
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background-color: #103F91; color: white; padding: 20px; text-align: center;">
+          <h1>SK Central System</h1>
+          <h2>Password Reset Notification</h2>
+        </div>
+        
+        <div style="padding: 20px; background-color: #f9f9f9;">
+          <h3 style="color: #103F91;">Your Password Has Been Reset</h3>
+          
+          <p>Dear ${name},</p>
+          
+          <p>Your administrator account password has been reset by a system administrator.</p>
+          
+          <div style="background-color: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
+            <h4 style="color: #103F91; margin-top: 0;">Your New Temporary Password</h4>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>Temporary Password:</strong> <span style="background-color: #fff3cd; padding: 2px 5px; font-family: monospace; font-weight: bold;">${tempPassword}</span></p>
+          </div>
+          
+          <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
+            <h4 style="color: #856404; margin-top: 0;">Important Security Notice</h4>
+            <p style="color: #856404; margin: 0;">Please change your password immediately after logging in. If you did not request this password reset, please contact your system administrator immediately.</p>
+          </div>
+          
+          <div style="text-align: center; margin-top: 20px;">
+            <p style="color: #666; font-size: 12px;">
+              This is an automated notification from SK Central System.<br>
+              If you have any questions, please contact the system administrator.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    await sendEmailDirectly({
+      to: email,
+      subject: `SK Admin Password Reset - ${name}`,
+      html: htmlContent,
+    });
+
+    console.log(`Password reset email sent to ${email}`);
+  } catch (emailError) {
+    console.error(`Failed to send password reset email to ${email}:`, emailError);
+    throw emailError;
+  }
+};
+
+// Import modules from navbar
 const modules = [
-  {
-    id: "youth-profiling",
-    title: "Youth Profiling",
-    href: "/youth-profiling",
-  },
-  {
-    id: "chat",
-    title: "Chat",
-    href: "/chat",
-  },
-  {
-    id: "announcement",
-    title: "Announcement",
-    href: "/announcement",
-  },
-  {
-    id: "community-event",
-    title: "Community Event",
-    href: "/community-event",
-  },
-  {
-    id: "job-listing",
-    title: "Job Listing",
-    href: "/job-listing",
-  },
-  {
-    id: "scholarship-listing",
-    title: "Scholarship Listing",
-    href: "/scholarship-listing",
-  },
-  {
-    id: "transparency-report",
-    title: "Transparency Report",
-    href: "/transparency-report",
-  },
-  {
-    id: "learning-hub",
-    title: "Learning Hub",
-    href: "/learningHub",
-  },
-  {
-    id: "feedbacks",
-    title: "Feedbacks",
-    href: "/feedbacks",
-  },
-  {
-    id: "podcast",
-    title: "Podcast",
-    href: "/LivePodcast",
-  },
-  {
-    id: "member-approval",
-    title: "Member Approval",
-    href: "/member-approval",
-  },
-  {
-    id: "user",
-    title: "User",
-    href: "/user",
-  },
+  { id: "youth-profiling", title: "Youth Profiling", href: "/youth-profiling" },
+  { id: "chat", title: "Chat", href: "/chat" },
+  { id: "announcement", title: "Announcement", href: "/announcement" },
+  { id: "community-event", title: "Community Event", href: "/community-event" },
+  { id: "job-listing", title: "Job Listing", href: "/job-listing" },
+  { id: "scholarship-listing", title: "Scholarship Listing", href: "/scholarship-listing" },
+  { id: "transparency-report", title: "Transparency Report", href: "/transparency-report" },
+  { id: "learning-hub", title: "Learning Hub", href: "/learningHub" },
+  { id: "feedbacks", title: "Feedbacks", href: "/feedbacks" },
+  { id: "podcast", title: "Podcast", href: "/LivePodcast" },
+  { id: "member-approval", title: "Member Approval", href: "/member-approval" },
+  { id: "user", title: "User", href: "/user" },
 ];
 
 // Default modules that every user gets
@@ -134,6 +286,7 @@ export default function AccountsTable() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [confirmMessage, setConfirmMessage] = useState("");
   const [resetPasswordMessage, setResetPasswordMessage] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -144,7 +297,7 @@ export default function AccountsTable() {
     civilStatus: "",
     gender: "",
     phoneNumber: "",
-    modules: defaultModules, // Start with default modules
+    modules: defaultModules,
   });
 
   const [editFormData, setEditFormData] = useState<Account>({
@@ -163,6 +316,22 @@ export default function AccountsTable() {
     modules: [],
   });
 
+  // Email configuration validation
+  const isEmailConfigured = EMAIL_CONFIG.GMAIL_USER && 
+                           EMAIL_CONFIG.GMAIL_APP_PASSWORD &&
+                           EMAIL_CONFIG.GMAIL_USER.trim() !== '' &&
+                           EMAIL_CONFIG.GMAIL_APP_PASSWORD.trim() !== '' &&
+                           EMAIL_CONFIG.GMAIL_USER.includes('@') &&
+                           EMAIL_CONFIG.GMAIL_APP_PASSWORD.length >= 16;
+
+  useEffect(() => {
+    if (!isEmailConfigured) {
+      console.warn('Gmail configuration not set properly. Please update EMAIL_CONFIG at the top of the file.');
+    } else {
+      console.log('Gmail configuration is properly set');
+    }
+  }, [isEmailConfigured]);
+
   // Fetch accounts from Firestore
   const fetchAccounts = async () => {
     try {
@@ -171,7 +340,7 @@ export default function AccountsTable() {
         (doc: QueryDocumentSnapshot<DocumentData>) => ({
           ...doc.data(),
           id: doc.id,
-          modules: doc.data().modules || [], // Ensure modules field exists
+          modules: doc.data().modules || [],
         })
       ) as Account[];
       setAccounts(fetchedAccounts);
@@ -207,22 +376,26 @@ export default function AccountsTable() {
     setEditFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Create new account (Auth + Firestore with UID)
+  // Create new account with email notification
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsProcessing(true);
+    
     const skId = generateSkId(formData.barangay);
+    const tempPassword = "skcentralmarikina";
+    
     const newAccount: Account = {
       skId,
       name: formData.name,
       email: formData.email,
       barangay: formData.barangay,
       position: formData.position,
-      password: "skcentralmarikina", // Default password
+      password: tempPassword,
       birthday: formData.birthday,
       civilStatus: formData.civilStatus,
       gender: formData.gender,
       phoneNumber: formData.phoneNumber,
-      modules: formData.modules, // Include selected modules
+      modules: formData.modules,
     };
 
     try {
@@ -243,6 +416,25 @@ export default function AccountsTable() {
         uid,
       });
 
+      // Send email notification
+      if (isEmailConfigured) {
+        try {
+          await sendAdminCreationEmail(newAccount, tempPassword);
+          setConfirmMessage(
+            `Account for ${newAccount.name} created successfully! An email with login credentials has been sent to ${newAccount.email}.`
+          );
+        } catch (emailError) {
+          console.error('Email sending failed:', emailError);
+          setConfirmMessage(
+            `Account for ${newAccount.name} created successfully, but email notification failed. Temporary password: "${tempPassword}". Please inform the user manually.`
+          );
+        }
+      } else {
+        setConfirmMessage(
+          `Account for ${newAccount.name} created successfully. Temporary password: "${tempPassword}". Note: Email notifications are disabled.`
+        );
+      }
+
       await fetchAccounts();
       setFormData({
         name: "",
@@ -253,18 +445,17 @@ export default function AccountsTable() {
         civilStatus: "",
         gender: "",
         phoneNumber: "",
-        modules: defaultModules, // Reset to default modules
+        modules: defaultModules,
       });
       setShowModal(false);
-      setConfirmMessage(
-        `Account for ${newAccount.name} created. Temporary password: "skcentralmarikina".`
-      );
       setShowSuccessModal(true);
     } catch (error: unknown) {
       console.error("Error adding account: ", error);
       const errorMessage = error instanceof Error ? error.message : String(error);
       setConfirmMessage(errorMessage || "Error creating account.");
       setShowSuccessModal(true);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -272,14 +463,17 @@ export default function AccountsTable() {
   const handleEditClick = (account: Account) => {
     setEditFormData({
       ...account,
-      modules: account.modules || [], // Ensure modules field exists
+      modules: account.modules || [],
     });
     setShowEditModal(true);
+    setResetPasswordMessage("");
   };
 
-  // Submit edited account (Save button)
+  // Submit edited account
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsProcessing(true);
+    
     try {
       if (!editFormData.id) return;
 
@@ -295,14 +489,11 @@ export default function AccountsTable() {
         civilStatus: editFormData.civilStatus,
         gender: editFormData.gender,
         phoneNumber: editFormData.phoneNumber,
-        modules: editFormData.modules, // Update modules
+        modules: editFormData.modules,
       });
 
-      // Refresh accounts list
       await fetchAccounts();
       setShowEditModal(false);
-
-      // Show success
       setConfirmMessage("Account updated successfully!");
       setShowSuccessModal(true);
     } catch (error: unknown) {
@@ -310,11 +501,15 @@ export default function AccountsTable() {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setConfirmMessage(errorMessage || "Error updating account.");
       setShowSuccessModal(true);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Delete account from Firestore and Auth
+  // Archive account
   const handleDeleteAccount = async () => {
+    setIsProcessing(true);
+    
     try {
       if (!editFormData.id || !editFormData.uid) {
         setConfirmMessage("Account ID or UID missing for archiving.");
@@ -322,7 +517,6 @@ export default function AccountsTable() {
         return;
       }
 
-      // Archive the account in Firestore by setting an "archived" flag.
       await updateDoc(doc(db, "adminUsers", editFormData.id), {
         archived: true,
       });
@@ -330,14 +524,8 @@ export default function AccountsTable() {
       const auth = getAuth();
       const currentUser = auth.currentUser;
 
-      // Note: Disabling a Firebase Auth user must be done server-side.
-      // If the current user is the same as the archived account, sign out to prevent further use.
       if (currentUser && currentUser.uid === editFormData.uid) {
         await signOut(auth);
-      } else {
-        console.warn(
-          "Archiving credentials must be handled on the backend. Ensure that archived users cannot log in."
-        );
       }
 
       await fetchAccounts();
@@ -346,34 +534,56 @@ export default function AccountsTable() {
       setShowSuccessModal(true);
     } catch (error: unknown) {
       console.error("Error archiving account: ", error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       setConfirmMessage(errorMessage || "Error archiving account.");
       setShowSuccessModal(true);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Handle Reset Password (sends email)
+  // Handle Reset Password with email notification
   const handleResetPassword = async () => {
+    setIsProcessing(true);
+    
     try {
       if (!editFormData.email || !editFormData.id) {
         setResetPasswordMessage("Account email or ID is missing for password reset.");
         return;
       }
-      // Reset the password in the Firestore record to default
+
+      const tempPassword = "skcentralmarikina";
+
+      // Reset the password in Firestore
       await updateDoc(doc(db, "adminUsers", editFormData.id), {
-        password: "skcentralmarikina",
+        password: tempPassword,
       });
-      setResetPasswordMessage(
-        `Password for ${editFormData.email} has been reset to default ("skcentralmarikina").`
-      );
+
+      // Send email notification
+      if (isEmailConfigured) {
+        try {
+          await sendPasswordResetEmail(editFormData.email, editFormData.name, tempPassword);
+          setResetPasswordMessage(
+            `Password reset email sent to ${editFormData.email}. The temporary password is: "${tempPassword}"`
+          );
+        } catch (emailError) {
+          console.error('Password reset email failed:', emailError);
+          setResetPasswordMessage(
+            `Password reset to "${tempPassword}" but email notification failed. Please inform the user manually.`
+          );
+        }
+      } else {
+        setResetPasswordMessage(
+          `Password reset to "${tempPassword}". Note: Email notifications are disabled.`
+        );
+      }
     } catch (error: unknown) {
       console.error("Error resetting password: ", error);
       setResetPasswordMessage(
-        error instanceof Error
-          ? error.message
-          : "Failed to reset password to default."
+        error instanceof Error ? error.message : "Failed to reset password."
       );
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -399,9 +609,16 @@ export default function AccountsTable() {
         {/* Main Content */}
         <div className="flex-1 flex flex-col">
           <div className="flex justify-between items-center p-8">
-            <h1 className="text-4xl font-bold text-[#103F91]">
-              Configurations of Accounts
-            </h1>
+            <div>
+              <h1 className="text-4xl font-bold text-[#103F91]">
+                Configurations of Accounts
+              </h1>
+              {!isEmailConfigured && (
+                <p className="text-sm text-orange-600 mt-2">
+                  ⚠️ Email notifications are disabled. Please configure EMAIL_CONFIG.
+                </p>
+              )}
+            </div>
             <button
               onClick={handleLogout}
               className="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700 transition-colors"
@@ -478,14 +695,21 @@ export default function AccountsTable() {
             <button
               onClick={() => setShowModal(false)}
               className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center rounded-full bg-red-600 text-white font-bold hover:bg-red-700 shadow-md"
+              disabled={isProcessing}
             >
               ✕
             </button>
             <h2 className="text-2xl font-bold text-[#0A2F7A] mb-4">
               Create New Account
             </h2>
+            {!isEmailConfigured && (
+              <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded">
+                <p className="text-sm text-orange-800">
+                  ⚠️ Email notifications are disabled. Users will not receive automatic credential emails.
+                </p>
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-              {/* User Details */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <input
                   type="text"
@@ -512,13 +736,9 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Barangay
-                  </option>
+                  <option value="" disabled>Select Barangay</option>
                   {Object.keys(barangayMapping).map((brgy) => (
-                    <option key={brgy} value={brgy}>
-                      {brgy}
-                    </option>
+                    <option key={brgy} value={brgy}>{brgy}</option>
                   ))}
                 </select>
                 <select
@@ -528,9 +748,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Position
-                  </option>
+                  <option value="" disabled>Select Position</option>
                   <option value="President">President</option>
                   <option value="Vice President">Vice President</option>
                   <option value="Secretary">Secretary</option>
@@ -554,9 +772,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Civil Status
-                  </option>
+                  <option value="" disabled>Select Civil Status</option>
                   <option value="Single">Single</option>
                   <option value="Married">Married</option>
                   <option value="Widowed">Widowed</option>
@@ -569,9 +785,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Gender
-                  </option>
+                  <option value="" disabled>Select Gender</option>
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
                 </select>
@@ -630,14 +844,16 @@ export default function AccountsTable() {
                   type="button"
                   onClick={() => setShowModal(false)}
                   className="bg-gray-400 text-white px-4 py-2 rounded-lg hover:bg-gray-500"
+                  disabled={isProcessing}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A]"
+                  className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A] disabled:bg-gray-400"
+                  disabled={isProcessing}
                 >
-                  Save
+                  {isProcessing ? "Creating..." : "Save"}
                 </button>
               </div>
             </form>
@@ -652,6 +868,7 @@ export default function AccountsTable() {
             <button
               onClick={() => setShowEditModal(false)}
               className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center rounded-full bg-red-600 text-white font-bold hover:bg-red-700 shadow-md"
+              disabled={isProcessing}
             >
               ✕
             </button>
@@ -685,13 +902,9 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Barangay
-                  </option>
+                  <option value="" disabled>Select Barangay</option>
                   {Object.keys(barangayMapping).map((brgy) => (
-                    <option key={brgy} value={brgy}>
-                      {brgy}
-                    </option>
+                    <option key={brgy} value={brgy}>{brgy}</option>
                   ))}
                 </select>
                 <select
@@ -701,9 +914,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Position
-                  </option>
+                  <option value="" disabled>Select Position</option>
                   <option value="President">President</option>
                   <option value="Vice President">Vice President</option>
                   <option value="Secretary">Secretary</option>
@@ -727,9 +938,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Civil Status
-                  </option>
+                  <option value="" disabled>Select Civil Status</option>
                   <option value="Single">Single</option>
                   <option value="Married">Married</option>
                   <option value="Widowed">Widowed</option>
@@ -742,9 +951,7 @@ export default function AccountsTable() {
                   required
                   className="w-full p-3 rounded-lg border border-gray-300 text-sm outline-none focus:ring-2 focus:ring-[#0A2F7A]"
                 >
-                  <option value="" disabled>
-                    Select Gender
-                  </option>
+                  <option value="" disabled>Select Gender</option>
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
                 </select>
@@ -796,34 +1003,37 @@ export default function AccountsTable() {
 
               <div className="flex flex-col gap-2 mt-4">
                 {resetPasswordMessage && (
-                  <p className="text-sm text-center text-[#103F91] font-medium">
-                    {resetPasswordMessage}
-                  </p>
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+                    <p className="text-sm text-blue-800 font-medium">
+                      {resetPasswordMessage}
+                    </p>
+                  </div>
                 )}
-                <div className="flex justify-end gap-2">
-                </div>
                 <div className="flex justify-between gap-2 mt-2">
                   <button
                     type="button"
                     onClick={handleResetPassword}
-                    className="bg-yellow-500 text-black px-4 py-2 rounded-lg hover:bg-orange-600 flex-1"
+                    className="bg-yellow-500 text-black px-4 py-2 rounded-lg hover:bg-orange-600 flex-1 disabled:bg-gray-400"
+                    disabled={isProcessing}
                   >
-                    Reset Password
+                    {isProcessing ? "Resetting..." : "Reset Password"}
                   </button>
                   <button
                     type="button"
                     onClick={handleDeleteAccount}
-                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex-1"
+                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex-1 disabled:bg-gray-400"
+                    disabled={isProcessing}
                   >
-                    Archive Account
+                    {isProcessing ? "Archiving..." : "Archive Account"}
                   </button>
                 </div>
-                                  <button
-                    type="submit"
-                    className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A]"
-                  >
-                    Save Changes
-                  </button>
+                <button
+                  type="submit"
+                  className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A] disabled:bg-gray-400"
+                  disabled={isProcessing}
+                >
+                  {isProcessing ? "Saving..." : "Save Changes"}
+                </button>
               </div>
             </form>
           </div>
@@ -833,13 +1043,18 @@ export default function AccountsTable() {
       {/* Success Modal */}
       {showSuccessModal && (
         <div className="fixed inset-0 bg-opacity-50 backdrop-blur-lg flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 shadow-lg border-2 border-[#0A2F7A] w-full max-w-sm text-center">
-            <p className="text-[#103F91] font-semibold mb-4">
+          <div className="bg-white rounded-2xl p-6 shadow-lg border-2 border-[#0A2F7A] w-full max-w-md text-center">
+            <div className="mb-4">
+              <svg className="w-16 h-16 mx-auto text-green-600" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+              </svg>
+            </div>
+            <p className="text-[#103F91] font-semibold mb-4 whitespace-pre-line">
               {confirmMessage}
             </p>
             <button
               onClick={handleCloseSuccessModal}
-              className="bg-[#103F91] text-white px-4 py-2 rounded-lg hover:bg-[#0A2F7A]"
+              className="bg-[#103F91] text-white px-6 py-2 rounded-lg hover:bg-[#0A2F7A]"
             >
               OK
             </button>

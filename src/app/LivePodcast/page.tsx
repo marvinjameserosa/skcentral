@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { db, auth } from "@/app/Firebase/firebase";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { db, auth, rtdb } from "@/app/Firebase/firebase";
 import {
   collection,
   onSnapshot,
@@ -13,8 +13,19 @@ import {
   QuerySnapshot,
   query,
   where,
-  getDocs
+  getDocs,
+  orderBy,
+  serverTimestamp,
 } from "firebase/firestore";
+import {
+  ref as rtdbRef,
+  onValue,
+  onChildAdded,
+  set as rtdbSet,
+  update as rtdbUpdate,
+  push as rtdbPush,
+  serverTimestamp as rtdbServerTimestamp,
+} from "firebase/database";
 import Navbar from "../Components/Navbar";
 import Image from "next/image";
 
@@ -57,6 +68,12 @@ interface FilterOptions {
   sortOrder: 'asc' | 'desc';
 }
 
+interface RTCConfiguration {
+  iceServers: Array<{
+    urls: string | string[];
+  }>;
+}
+
 const LivePodcast = () => {
   const [podcastRooms, setPodcastRooms] = useState<PodcastRoom[]>([]);
   const [filteredRooms, setFilteredRooms] = useState<PodcastRoom[]>([]);
@@ -73,6 +90,12 @@ const LivePodcast = () => {
   });
   const [, setCategories] = useState<string[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
+
+  // WebRTC refs
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const dataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
+  const rtdbUnsubscribersRef = useRef<Map<string, (() => void)[]>>(new Map());
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -107,7 +130,8 @@ const LivePodcast = () => {
   const parseDateTime = useCallback((dateStr?: string, timeStr?: string, fallback?: number) => {
     if (dateStr && timeStr) {
       try {
-        const dateTime = new Date(`${dateStr} ${timeStr}`);
+        const cleanTimeStr = timeStr.trim();
+        const dateTime = new Date(`${dateStr} ${cleanTimeStr}`);
         if (!isNaN(dateTime.getTime())) {
           return dateTime.getTime();
         }
@@ -159,7 +183,7 @@ const LivePodcast = () => {
     if (!dateStr || !timeStr) return '';
     
     try {
-      const scheduledDate = new Date(`${dateStr} ${timeStr}`);
+      const scheduledDate = new Date(`${dateStr} ${timeStr.trim()}`);
       if (isNaN(scheduledDate.getTime())) return '';
       
       const now = new Date();
@@ -203,6 +227,310 @@ const LivePodcast = () => {
     }
   };
 
+  const initializeWebRTC = async (roomId: string, webrtcRoomId: string, userId: string, userName: string, isHost: boolean) => {
+    try {
+      console.log(`Initializing WebRTC for ${isHost ? 'host' : 'listener'}:`, roomId);
+
+      if (isHost) {
+        // Request microphone permission
+        localStreamRef.current = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+
+        console.log('Local stream acquired for host');
+
+        // Update Firestore status to live
+        await updateDoc(doc(db, "podcasts", roomId), {
+          status: 'live',
+          startedAt: serverTimestamp()
+        });
+
+        // Initialize RTDB room structure
+        const rtdbRoomRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}`);
+        await rtdbSet(rtdbRoomRef, {
+          hostJoined: true,
+          isLive: true,
+          status: 'live',
+          firestoreDocId: roomId,
+          hostUserId: userId,
+          hostUserName: userName
+        });
+
+        console.log('RTDB room initialized');
+
+        // Listen for join requests from mobile listeners
+        const joinRequestsRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/joinRequests`);
+        
+        const unsubscribe = onChildAdded(joinRequestsRef, async (snapshot) => {
+          const requestId = snapshot.key;
+          const data = snapshot.val();
+          
+          if (requestId && data) {
+            console.log('New join request:', requestId, data);
+            await handleListenerJoin(webrtcRoomId, requestId, data);
+          }
+        });
+
+        rtdbUnsubscribersRef.current.set('joinRequests', [unsubscribe]);
+
+      } else {
+        // Listener logic - send join request to RTDB
+        const joinRequestRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/joinRequests/${userId}`);
+        await rtdbSet(joinRequestRef, {
+          userId,
+          userName,
+          timestamp: rtdbServerTimestamp()
+        });
+
+        console.log('Join request sent to RTDB');
+
+        // Listen for offer from host
+        const offersRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/offers/${userId}`);
+        
+        const unsubscribe = onValue(offersRef, async (snapshot) => {
+          const offer = snapshot.val();
+          if (offer && offer.sdp && offer.type) {
+            console.log('Received offer from host');
+            await handleHostOffer(webrtcRoomId, userId, offer);
+          }
+        });
+
+        rtdbUnsubscribersRef.current.set('offer', [unsubscribe]);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Error initializing WebRTC:', error);
+      throw error;
+    }
+  };
+
+  const handleListenerJoin = async (webrtcRoomId: string, requestId: string, data: { userId: string; userName: string; timestamp: number }) => {
+    try {
+      if (peerConnectionsRef.current.has(requestId)) {
+        console.log('Peer connection already exists for:', requestId);
+        return;
+      }
+
+      const configuration: RTCConfiguration = {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ]
+      };
+
+      const pc = new RTCPeerConnection(configuration);
+      peerConnectionsRef.current.set(requestId, pc);
+
+      // Add local audio tracks
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach(track => {
+          if (localStreamRef.current) {
+            pc.addTrack(track, localStreamRef.current);
+          }
+        });
+      }
+
+      // Create data channel for emoji reception
+      const dataChannel = pc.createDataChannel('emojis', {
+        ordered: true
+      });
+
+      dataChannel.onopen = () => {
+        console.log('Data channel opened for:', requestId);
+      };
+
+      dataChannel.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'emoji') {
+            console.log('Received emoji from listener:', message.emoji);
+            // Handle emoji display logic here
+          }
+        } catch (e) {
+          console.error('Error parsing data channel message:', e);
+        }
+      };
+
+      dataChannelsRef.current.set(requestId, dataChannel);
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const candidateRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/candidates/${requestId}/host`);
+          rtdbPush(candidateRef, {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex
+          });
+        }
+      };
+
+      // Listen for listener's ICE candidates
+      const listenerCandidatesRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/candidates/${requestId}/listener`);
+      
+      const candidateUnsubscribe = onChildAdded(listenerCandidatesRef, async (snapshot) => {
+        const candidateData = snapshot.val();
+        if (candidateData && pc.remoteDescription) {
+          const candidate = new RTCIceCandidate({
+            candidate: candidateData.candidate,
+            sdpMid: candidateData.sdpMid,
+            sdpMLineIndex: candidateData.sdpMLineIndex
+          });
+          await pc.addIceCandidate(candidate);
+        }
+      });
+
+      const existingUnsubscribers = rtdbUnsubscribersRef.current.get(requestId) || [];
+      rtdbUnsubscribersRef.current.set(requestId, [...existingUnsubscribers, candidateUnsubscribe]);
+
+      // Create and send offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const offerRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/offers/${requestId}`);
+      await rtdbSet(offerRef, {
+        sdp: offer.sdp,
+        type: offer.type,
+        createdAt: rtdbServerTimestamp(),
+        listenerUserName: data.userName || ''
+      });
+
+      console.log('Offer sent to listener:', requestId);
+
+      // Listen for answer
+      const answerRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/answers/${requestId}`);
+      
+      const answerUnsubscribe = onValue(answerRef, async (snapshot) => {
+        const answer = snapshot.val();
+        if (answer && answer.sdp && answer.type) {
+          const answerDesc = new RTCSessionDescription({
+            sdp: answer.sdp,
+            type: answer.type as RTCSdpType
+          });
+          await pc.setRemoteDescription(answerDesc);
+          console.log('Answer received from listener:', requestId);
+        }
+      });
+
+      const allUnsubscribers = rtdbUnsubscribersRef.current.get(requestId) || [];
+      rtdbUnsubscribersRef.current.set(requestId, [...allUnsubscribers, answerUnsubscribe]);
+
+    } catch (error) {
+      console.error('Error handling listener join:', error);
+    }
+  };
+
+  const handleHostOffer = async (webrtcRoomId: string, userId: string, offer: RTCSessionDescriptionInit) => {
+    try {
+      const configuration: RTCConfiguration = {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ]
+      };
+
+      const pc = new RTCPeerConnection(configuration);
+      peerConnectionsRef.current.set(userId, pc);
+
+      // Handle incoming audio tracks
+      pc.ontrack = (event) => {
+        console.log('Received remote track from host');
+        const remoteAudio = new Audio();
+        remoteAudio.srcObject = event.streams[0];
+        remoteAudio.play().catch(e => console.error('Error playing audio:', e));
+      };
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const candidateRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/candidates/${userId}/listener`);
+          rtdbPush(candidateRef, {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex
+          });
+        }
+      };
+
+      // Listen for host's ICE candidates
+      const hostCandidatesRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/candidates/${userId}/host`);
+      
+      const candidateUnsubscribe = onChildAdded(hostCandidatesRef, async (snapshot) => {
+        const candidateData = snapshot.val();
+        if (candidateData) {
+          const candidate = new RTCIceCandidate({
+            candidate: candidateData.candidate,
+            sdpMid: candidateData.sdpMid,
+            sdpMLineIndex: candidateData.sdpMLineIndex
+          });
+          await pc.addIceCandidate(candidate);
+        }
+      });
+
+      rtdbUnsubscribersRef.current.set('hostCandidates', [candidateUnsubscribe]);
+
+      // Set remote description and create answer
+      const offerDesc = new RTCSessionDescription({
+        sdp: offer.sdp,
+        type: offer.type as RTCSdpType
+      });
+      
+      await pc.setRemoteDescription(offerDesc);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      // Send answer to RTDB
+      const answerRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}/answers/${userId}`);
+      await rtdbSet(answerRef, {
+        sdp: answer.sdp,
+        type: answer.type
+      });
+
+      console.log('Answer sent to host');
+
+    } catch (error) {
+      console.error('Error handling host offer:', error);
+    }
+  };
+
+  const cleanupWebRTC = async (webrtcRoomId?: string) => {
+    try {
+      // Close all peer connections
+      peerConnectionsRef.current.forEach(pc => pc.close());
+      peerConnectionsRef.current.clear();
+
+      // Close all data channels
+      dataChannelsRef.current.forEach(dc => dc.close());
+      dataChannelsRef.current.clear();
+
+      // Stop local stream
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
+      }
+
+      // Unsubscribe from RTDB listeners
+      rtdbUnsubscribersRef.current.forEach(unsubscribers => {
+        unsubscribers.forEach(unsub => unsub());
+      });
+      rtdbUnsubscribersRef.current.clear();
+
+      // Clean up RTDB room if host
+      if (webrtcRoomId) {
+        const rtdbRoomRef = rtdbRef(rtdb, `podcastRooms/${webrtcRoomId}`);
+        await rtdbUpdate(rtdbRoomRef, {
+          hostJoined: false,
+          isLive: false,
+          status: 'ended'
+        });
+      }
+
+      console.log('WebRTC cleanup completed');
+    } catch (error) {
+      console.error('Error during WebRTC cleanup:', error);
+    }
+  };
+
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
 
@@ -211,7 +539,10 @@ const LivePodcast = () => {
         setDebugInfo('Connecting to Firebase...');
         setConnectionStatus('connecting');
 
-        const podcastsQuery = query(collection(db, "podcasts"));
+        const podcastsQuery = query(
+          collection(db, "podcasts"),
+          orderBy("date", "desc")
+        );
 
         setDebugInfo('Setting up real-time listener...');
         
@@ -235,12 +566,6 @@ const LivePodcast = () => {
                     continue;
                   }
 
-                  console.log('Processing podcast:', roomId, {
-                    status: roomData.status,
-                    approved: roomData.approved,
-                    title: roomData.title
-                  });
-
                   const {
                     title = "Untitled Podcast",
                     hostId = "unknown",
@@ -262,7 +587,6 @@ const LivePodcast = () => {
                     roomId: firestoreRoomId
                   } = roomData;
 
-                  // CRITICAL: Only exclude "ended" podcasts - show ALL others
                   if (status === 'ended') {
                     console.log(`Skipping ended podcast ${roomId}`);
                     continue;
@@ -272,7 +596,6 @@ const LivePodcast = () => {
                   const finalCreatedAt = parseDateTime(date, time, createdAt);
                   const scheduledTime = date && time ? parseDateTime(date, time) : undefined;
 
-                  // Generate WebRTC room ID if missing
                   let finalWebRTCRoomId = webrtcRoomId;
                   if (!finalWebRTCRoomId) {
                     finalWebRTCRoomId = generateWebRTCRoomId();
@@ -326,7 +649,6 @@ const LivePodcast = () => {
               console.log(`Total podcasts found (excluding ended): ${rooms.length}`);
               setDebugInfo(`Found ${rooms.length} podcasts (${snapshot.size} total, excluded ended ones)`);
 
-              // Sort by status priority and creation time
               rooms.sort((a, b) => {
                 const statusPriority = { 
                   live: 5, 
@@ -381,6 +703,7 @@ const LivePodcast = () => {
       if (unsubscribe) {
         unsubscribe();
       }
+      cleanupWebRTC();
     };
   }, [generateWebRTCRoomId, getErrorMessage, parseDateTime]);
 
@@ -455,7 +778,6 @@ const LivePodcast = () => {
         throw new Error('Podcast not found');
       }
 
-      // Allow joining if approved OR scheduled OR live OR waiting
       const isJoinable = roomDoc.status !== 'ended';
       if (!isJoinable) {
         throw new Error('This podcast has ended and is no longer available');
@@ -483,8 +805,12 @@ const LivePodcast = () => {
       const roomRef = doc(db, "podcasts", roomId);
       await updateDoc(roomRef, {
         participantCount: increment(1),
-        status: 'live' // Automatically mark as live when someone joins
+        status: role === 'host' ? 'live' : roomDoc.status
       });
+
+      // Initialize WebRTC connection
+      const isHost = role === 'host';
+      await initializeWebRTC(roomId, webrtcRoomId, userId, userName, isHost);
       
       return { success: true, webrtcRoomId };
     } catch (error) {
@@ -525,14 +851,12 @@ const LivePodcast = () => {
 
   const handleJoinAsHost = async (room: PodcastRoom) => {
     try {
-      // Check if user is logged in
       const currentUser = auth.currentUser;
       if (!currentUser) {
         alert("Please log in to join as host");
         return;
       }
 
-      // Fetch the user from adminUsers collection
       const adminQuery = query(collection(db, "adminUsers"), where("uid", "==", currentUser.uid));
       const adminSnapshot = await getDocs(adminQuery);
       
@@ -541,11 +865,9 @@ const LivePodcast = () => {
         return;
       }
 
-      // Get the user's name from adminUsers collection
       const adminUserData = adminSnapshot.docs[0].data();
       const userName = adminUserData.name;
 
-      // Check if the logged user's name matches the podcast speaker/hostName
       if (userName !== room.hostName && userName !== room.speaker) {
         alert(`You are not the host of this podcast. Only ${room.hostName || room.speaker} can join as host.`);
         return;
@@ -624,7 +946,7 @@ const LivePodcast = () => {
         <Navbar />
         <div className="max-w-2xl mx-auto">
           <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-            <h2 className="text-lg font-semibold text-red-800 mb-2">🚨 Connection Error</h2>
+            <h2 className="text-lg font-semibold text-red-800 mb-2">Connection Error</h2>
             <p className="text-red-700 mb-4">{error}</p>
             <div className="bg-white p-4 rounded border text-sm mb-4">
               <strong className="text-gray-700">Debug Info:</strong>
@@ -636,7 +958,7 @@ const LivePodcast = () => {
               onClick={handleRetry} 
               className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors"
             >
-              🔄 Retry Connection
+              Retry Connection
             </button>
           </div>
         </div>
